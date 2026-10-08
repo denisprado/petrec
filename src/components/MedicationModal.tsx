@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useApp } from "@/context/AppContext";
 import {
   X,
@@ -50,6 +51,11 @@ export function MedicationModal({
   onSuccess,
 }: MedicationModalProps) {
   const { activePetId, currentUser, triggerRefresh, permissions } = useApp();
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const [name, setName] = useState("");
   const [activeIngredient, setActiveIngredient] = useState("");
@@ -121,7 +127,7 @@ export function MedicationModal({
     setShowDeleteConfirm(false);
   }, [initialData, mode, isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
   const handleApplyPreset = (presetTimes: string[]) => {
     setTimes(presetTimes);
@@ -253,8 +259,8 @@ export function MedicationModal({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200 overflow-y-auto">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200 overflow-y-auto">
       <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden my-8 max-h-[90vh] flex flex-col">
         {/* Header Modal */}
         <div className="px-6 py-5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex items-center justify-between shrink-0">
@@ -630,6 +636,7 @@ export function MedicationModal({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

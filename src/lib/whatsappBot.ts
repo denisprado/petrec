@@ -162,19 +162,21 @@ export async function processIncomingWhatsAppMessage(params: {
   }
 
   // COMANDO 4: Alimentação / Ração diária
-  if (
+  const isFeedingIntent =
     lower === "4" ||
     lower.startsWith("4 ") ||
     lower.startsWith("4-") ||
-    lower.includes("dei comida") ||
+    lower.includes("comida") ||
     lower.includes("alimentei") ||
     lower.includes("comeu") ||
     lower.includes("refeição") ||
     lower.includes("refeicao") ||
-    lower.includes("dei ração") ||
-    lower.includes("dei racao") ||
-    lower === "comida"
-  ) {
+    ((lower.includes("dei") || lower.includes("deu") || lower.includes("coloquei")) &&
+      (lower.includes("rac") || lower.includes("g") || lower.includes("prato"))) ||
+    ((lower.includes("racao") || lower.includes("ração")) &&
+      (lower.includes("dei") || lower.includes("comeu") || lower.includes("coloquei") || /\d+\s*g/i.test(lower)));
+
+  if (isFeedingIntent) {
     return handleQuickFeedIntent(user, currentPet, text);
   }
 
@@ -823,8 +825,24 @@ async function handleQuickFeedIntent(user: any, pet: any, rawText: string): Prom
     return { replyText: `Não encontrei nenhuma ração cadastrada no estoque do ${pet.name}.` };
   }
 
-  // Consumo padrão da porção diária ou 400g
-  const qty = racao.dailyConsumption > 0 ? racao.dailyConsumption : 400;
+  // Consumo padrão da porção diária ou valor customizado enviado pelo usuário (ex: "dei 120g")
+  let qty = racao.dailyConsumption > 0 ? racao.dailyConsumption : 400;
+  if (rawText.trim() !== "4") {
+    const numMatch = rawText.match(/(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gr|gramas?)?/i);
+    if (numMatch && numMatch[1]) {
+      const val = parseFloat(numMatch[1].replace(",", "."));
+      const unitStr = (numMatch[2] || "").toLowerCase();
+      if (!isNaN(val) && val > 0 && val < 50000) {
+        if (unitStr.startsWith("k")) {
+          qty = racao.unit === "g" ? val * 1000 : val;
+        } else if (unitStr.startsWith("g") || val >= 10) {
+          qty = racao.unit === "kg" ? val / 1000 : val;
+        } else {
+          qty = val;
+        }
+      }
+    }
+  }
   const newQty = Math.max(0, racao.currentQuantity - qty);
 
   const fc = calculateStockForecast({
@@ -919,17 +937,25 @@ async function handleStateMachine(
   const state = session.state;
   const payload = session.pendingActionPayload ? JSON.parse(session.pendingActionPayload) : {};
 
-  // Cancelar fluxo a qualquer momento
+  // Cancelar fluxo a qualquer momento ou retornar ao menu
+  const lowerText = text.toLowerCase().trim();
   if (
-    text.toLowerCase() === "cancelar" ||
-    text.toLowerCase() === "sair" ||
-    text.toLowerCase() === "voltar"
+    lowerText === "cancelar" ||
+    lowerText === "sair" ||
+    lowerText === "voltar" ||
+    lowerText === "menu" ||
+    lowerText === "0" ||
+    lowerText === "inicio" ||
+    lowerText === "início"
   ) {
     await prisma.whatsappSession.update({
       where: { id: session.id },
       data: { state: "IDLE", pendingActionPayload: null },
     });
-    return { replyText: "Operação cancelada. Como posso ajudar agora? Envie *menu* para ver opções." };
+    if (lowerText === "menu" || lowerText === "0" || lowerText === "inicio" || lowerText === "início") {
+      return getMenuReply(user, pet, userPets);
+    }
+    return { replyText: "Operação cancelada. Como posso ajudar agora? Envie *menu* ou *0* para ver opções." };
   }
 
   // 1. Escolha de Medicamento

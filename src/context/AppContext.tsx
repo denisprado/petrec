@@ -177,17 +177,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // 2. Atualizar dados do pet ativo quando activePetId mudar ou refresh for acionado
   useEffect(() => {
-    if (!isInitializedRef.current || !activePetId) return;
+    if (!isInitializedRef.current) return;
 
     async function updatePetMembers() {
       try {
-        const res = await fetch(`/api/dashboard?petId=${activePetId}`);
+        const res = await fetch(`/api/dashboard${activePetId ? `?petId=${activePetId}` : ""}`);
         const data = await res.json();
         if (data.activePet?.members) {
           setPetMembers(data.activePet.members);
         }
         if (data.pets) {
           setPets(data.pets);
+        }
+        if (!activePetId && data.activePet?.id) {
+          setActivePetIdState(data.activePet.id);
         }
       } catch (err) {
         console.error("Erro ao atualizar membros do pet:", err);

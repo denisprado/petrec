@@ -36,6 +36,7 @@ async function main() {
       email: "denis@exemplo.com",
       avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
       timezone: "America/Sao_Paulo",
+      whatsappPhoneNumber: "+5519988887777",
     },
   });
 

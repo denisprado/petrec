@@ -6,11 +6,14 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
-  if (!petId) {
-    return NextResponse.json({ error: "petId é obrigatório" }, { status: 400 });
-  }
-
   try {
+    if (!petId) {
+      const allUsers = await prisma.user.findMany({
+        include: { professionalProfile: true },
+      });
+      return NextResponse.json({ members: [], invitations: [], allUsers });
+    }
+
     const [members, invitations, allUsers] = await Promise.all([
       prisma.petMember.findMany({
         where: { petId },

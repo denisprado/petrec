@@ -46,23 +46,40 @@ export default function DashboardPage() {
 
   // Carregar dados agregados do dashboard
   useEffect(() => {
+    let isCancelled = false;
+
     async function loadDashboard() {
       setLoading(true);
       try {
-        const res = await fetch(`/api/dashboard?petId=${activePetId}&userId=${currentUser.id}`);
-        const json = await res.json();
-        setData(json);
+        const queryParams = new URLSearchParams();
+        if (activePetId) queryParams.set("petId", activePetId);
+        if (currentUser?.id) queryParams.set("userId", currentUser.id);
+
+        const res = await fetch(`/api/dashboard?${queryParams.toString()}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (!isCancelled) {
+            setData(json);
+            if (!activePetId && json.activePet?.id) {
+              setActivePetId(json.activePet.id);
+            }
+          }
+        }
       } catch (err) {
         console.error("Erro ao carregar dashboard:", err);
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
-    if (activePetId) {
-      loadDashboard();
-    }
-  }, [activePetId, currentUser.id, refreshTrigger]);
+    loadDashboard();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activePetId, currentUser?.id, refreshTrigger]);
 
   // Ação de administrar medicamento hoje
   const handleAdminister = async (administrationId: string, status: "administered" | "skipped") => {
@@ -127,6 +144,42 @@ export default function DashboardPage() {
   }
 
   const activePet = data?.activePet;
+
+  // Estado amigável quando nenhum pet está cadastrado ainda
+  if (!loading && (!activePet || (data?.pets && data.pets.length === 0))) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-5">
+        <div className="w-16 h-16 rounded-3xl bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto shadow-inner">
+          <Heart className="w-8 h-8" />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+            Bem-vindo ao PetRec!
+          </h2>
+          <p className="text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
+            Nenhum animal cadastrado ainda. Comece adicionando seu primeiro pet para gerenciar medicamentos, alimentação, estoque de ração e vacinas de forma colaborativa.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowNewPetModal(true)}
+          className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md transition cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Cadastrar Meu Primeiro Pet</span>
+        </button>
+
+        <PetModal
+          isOpen={showNewPetModal}
+          onClose={() => setShowNewPetModal(false)}
+          mode="create"
+          onSuccess={(pet) => {
+            setActivePetId(pet.id);
+            triggerRefresh();
+          }}
+        />
+      </div>
+    );
+  }
   const criticalStock = data?.attention?.criticalStock || [];
   const attentionStock = data?.attention?.attentionStock || [];
   const administrations = data?.today?.administrations || [];

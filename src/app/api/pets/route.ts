@@ -91,19 +91,28 @@ export async function POST(request: Request) {
       userId,
     } = body;
 
-    if (!name || !species || !userId) {
+    if (!name || !species) {
       return NextResponse.json(
-        { error: "Nome, espécie e o usuário criador (userId) são obrigatórios." },
+        { error: "Nome e espécie do animal são obrigatórios." },
         { status: 400 }
       );
     }
 
-    const creator = await prisma.user.findUnique({ where: { id: userId } });
+    let creator = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
     if (!creator) {
-      return NextResponse.json(
-        { error: "Usuário criador não encontrado no sistema." },
-        { status: 404 }
-      );
+      creator =
+        (await prisma.user.findFirst({ where: { email: "denis@exemplo.com" } })) ||
+        (await prisma.user.findFirst());
+    }
+    if (!creator) {
+      creator = await prisma.user.create({
+        data: {
+          name: "Denis Forigo",
+          email: "denis@exemplo.com",
+          avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+          timezone: "America/Sao_Paulo",
+        },
+      });
     }
 
     const parsedWeight = weight ? parseFloat(weight) : null;

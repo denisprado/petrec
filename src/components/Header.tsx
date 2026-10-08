@@ -82,7 +82,7 @@ export function Header() {
                     }`}
                   />
                   <span className="font-bold text-slate-900">
-                    {activePet ? activePet.name : "Carregando..."}
+                    {activePet ? activePet.name : (pets.length === 0 ? "Cadastrar pet" : "Carregando...")}
                   </span>
                 </span>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-500" />

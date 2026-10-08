@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useApp } from "@/context/AppContext";
 import {
   X,
@@ -52,6 +53,11 @@ export function PetModal({
 }: PetModalProps) {
   const { currentUser, setActivePetId, triggerRefresh, permissions } = useApp();
 
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const [name, setName] = useState("");
   const [species, setSpecies] = useState("Cão");
   const [breed, setBreed] = useState("");
@@ -99,7 +105,7 @@ export function PetModal({
     setShowDeleteConfirm(false);
   }, [initialData, mode, isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -199,8 +205,8 @@ export function PetModal({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl my-8 animate-in fade-in zoom-in-95 space-y-4 max-h-[90vh] overflow-y-auto">
         {/* Cabeçalho */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -469,6 +475,7 @@ export function PetModal({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -9,26 +9,54 @@ export async function GET(request: Request) {
   const petId = searchParams.get("petId");
 
   try {
-    // 1. Obter todos os pets associados ao usuário (ou todos se não passar userId para demonstração)
-    let pets;
+    // 1. Obter todos os pets associados ao usuário (com fallback para todos se o usuário não tiver membros ainda)
+    let pets: any[] = [];
     if (userId) {
       const userMembers = await prisma.petMember.findMany({
         where: { userId },
-        include: { pet: true },
+        include: {
+          pet: {
+            include: {
+              members: { include: { user: true } },
+            },
+          },
+        },
       });
       pets = userMembers.map((m) => ({ ...m.pet, userRole: m.role }));
-    } else {
-      pets = await prisma.pet.findMany({
+    }
+
+    if (pets.length === 0) {
+      const allPets = await prisma.pet.findMany({
         include: {
           members: {
             include: { user: true },
           },
         },
       });
+      pets = allPets.map((p) => ({
+        ...p,
+        userRole: p.members.find((m) => m.userId === userId)?.role || "owner",
+      }));
     }
 
     if (pets.length === 0) {
-      return NextResponse.json({ pets: [], activePet: null });
+      return NextResponse.json({
+        pets: [],
+        activePet: null,
+        today: { administrations: [], appointments: [] },
+        attention: {
+          criticalStock: [],
+          attentionStock: [],
+          upcomingVaccines: [],
+          pendingPrescriptions: [],
+          pendingTasksCount: 0,
+        },
+        purchases: { pendingList: [], completedList: [] },
+        health: { vaccines: [], upcomingAppointments: [] },
+        inventory: [],
+        medications: [],
+        recentActivities: [],
+      });
     }
 
     // Identificar pet ativo
