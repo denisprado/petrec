@@ -14,6 +14,7 @@
   "dependencies": {
     "@prisma/client": "^5.21.1",
     "clsx": "^2.1.1",
+    "convex": "^1.46.0",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.453.0",
     "next": "^14.2.15",

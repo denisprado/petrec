@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppProvider } from "@/context/AppContext";
+import { ConvexClientProvider } from "@/providers/ConvexClientProvider";
 import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 
@@ -18,11 +19,13 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <body className="min-h-screen bg-slate-50 text-slate-900 flex flex-col antialiased">
-        <AppProvider>
-          <Header />
-          <BottomNav />
-          <main className="flex-1 pb-20 md:pb-12">{children}</main>
-        </AppProvider>
+        <ConvexClientProvider>
+          <AppProvider>
+            <Header />
+            <BottomNav />
+            <main className="flex-1 pb-20 md:pb-12">{children}</main>
+          </AppProvider>
+        </ConvexClientProvider>
       </body>
     </html>
   );
