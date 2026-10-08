@@ -20,7 +20,7 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function EstoquePage() {
-  const { activePetId, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
+  const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -38,22 +38,42 @@ export default function EstoquePage() {
   const [newLeadTime, setNewLeadTime] = useState<string>("");
 
   useEffect(() => {
+    let isCancelled = false;
+
     async function fetchInventory() {
-      if (!activePetId) return;
+      const petIdToFetch = activePetId || pets[0]?.id;
+      if (!petIdToFetch) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
-        const res = await fetch(`/api/inventory?petId=${activePetId}`);
-        const data = await res.json();
-        setItems(data.items || []);
+        const res = await fetch(`/api/inventory?petId=${petIdToFetch}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!isCancelled) {
+            setItems(data.items || []);
+            if (!activePetId && petIdToFetch) {
+              setActivePetId(petIdToFetch);
+            }
+          }
+        }
       } catch (err) {
-        console.error(err);
+        console.error("Erro ao carregar estoque:", err);
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
     fetchInventory();
-  }, [activePetId, refreshTrigger]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activePetId, pets, refreshTrigger]);
 
   const handleTransactionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

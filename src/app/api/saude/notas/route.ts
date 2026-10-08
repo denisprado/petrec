@@ -7,18 +7,24 @@ export async function GET(request: Request) {
   const petId = searchParams.get("petId");
   const userId = searchParams.get("userId");
 
-  if (!petId) {
-    return NextResponse.json({ error: "petId é obrigatório" }, { status: 400 });
-  }
-
   try {
+    let targetPetId: string | undefined = petId || undefined;
+    if (!targetPetId) {
+      const firstPet = await prisma.pet.findFirst();
+      targetPetId = firstPet?.id;
+    }
+
+    if (!targetPetId) {
+      return NextResponse.json({ notes: [], canViewPrivateVetNotes: false });
+    }
+
     // Determinar permissões do usuário que está consultando
     let canViewPrivateVetNotes = false;
 
     if (userId) {
       const membership = await prisma.petMember.findUnique({
         where: {
-          petId_userId: { petId, userId },
+          petId_userId: { petId: targetPetId, userId },
         },
       });
 
@@ -35,7 +41,7 @@ export async function GET(request: Request) {
 
     const notes = await prisma.clinicalNote.findMany({
       where: {
-        petId,
+        petId: targetPetId,
         ...visibilityFilter,
       },
       include: {

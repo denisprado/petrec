@@ -17,7 +17,7 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function ComprasPage() {
-  const { activePetId, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
+  const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [shoppingItems, setShoppingItems] = useState<any[]>([]);
   const [purchases, setPurchases] = useState<any[]>([]);
   const [inventoryItems, setInventoryItems] = useState<any[]>([]);
@@ -40,32 +40,50 @@ export default function ComprasPage() {
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
+    let isCancelled = false;
+
     async function loadData() {
-      if (!activePetId) return;
+      const petIdToFetch = activePetId || pets[0]?.id;
+      if (!petIdToFetch) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
         const [shopRes, purRes, invRes] = await Promise.all([
-          fetch(`/api/shopping-list?petId=${activePetId}`),
-          fetch(`/api/purchases?petId=${activePetId}&userId=${currentUser.id}`),
-          fetch(`/api/inventory?petId=${activePetId}`),
+          fetch(`/api/shopping-list?petId=${petIdToFetch}`),
+          fetch(`/api/purchases?petId=${petIdToFetch}&userId=${currentUser.id}`),
+          fetch(`/api/inventory?petId=${petIdToFetch}`),
         ]);
 
         const shopJson = await shopRes.json();
         const purJson = await purRes.json();
         const invJson = await invRes.json();
 
-        setShoppingItems(shopJson.items || []);
-        setPurchases(purJson.purchases || []);
-        setInventoryItems(invJson.items || []);
+        if (!isCancelled) {
+          setShoppingItems(shopJson.items || []);
+          setPurchases(purJson.purchases || []);
+          setInventoryItems(invJson.items || []);
+          if (!activePetId && petIdToFetch) {
+            setActivePetId(petIdToFetch);
+          }
+        }
       } catch (err) {
-        console.error(err);
+        console.error("Erro ao carregar dados de compras:", err);
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
     loadData();
-  }, [activePetId, currentUser.id, refreshTrigger]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activePetId, pets, currentUser.id, refreshTrigger]);
 
   // Alternar status de comprado na lista compartilhada
   const togglePurchased = async (item: any) => {

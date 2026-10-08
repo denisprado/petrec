@@ -26,7 +26,7 @@ import { format, differenceInCalendarDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function TutoresPage() {
-  const { activePetId, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
+  const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [members, setMembers] = useState<any[]>([]);
   const [invitations, setInvitations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,23 +42,43 @@ export default function TutoresPage() {
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
+    let isCancelled = false;
+
     async function loadMembers() {
-      if (!activePetId) return;
+      const petIdToFetch = activePetId || pets[0]?.id;
+      if (!petIdToFetch) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
-        const res = await fetch(`/api/tutores?petId=${activePetId}`);
-        const data = await res.json();
-        setMembers(data.members || []);
-        setInvitations(data.invitations || []);
+        const res = await fetch(`/api/tutores?petId=${petIdToFetch}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!isCancelled) {
+            setMembers(data.members || []);
+            setInvitations(data.invitations || []);
+            if (!activePetId && petIdToFetch) {
+              setActivePetId(petIdToFetch);
+            }
+          }
+        }
       } catch (err) {
-        console.error(err);
+        console.error("Erro ao carregar tutores:", err);
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
     loadMembers();
-  }, [activePetId, refreshTrigger]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activePetId, pets, refreshTrigger]);
 
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();

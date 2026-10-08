@@ -22,7 +22,7 @@ import { MedicationModal } from "@/components/MedicationModal";
 import { StockForecastBadge } from "@/components/StockForecastBadge";
 
 export default function MedicamentosPage() {
-  const { activePetId, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
+  const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [medications, setMedications] = useState<any[]>([]);
   const [administrations, setAdministrations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,23 +38,43 @@ export default function MedicamentosPage() {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
+    let isCancelled = false;
+
     async function loadData() {
-      if (!activePetId) return;
+      const petIdToFetch = activePetId || pets[0]?.id;
+      if (!petIdToFetch) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
-        const res = await fetch(`/api/medications?petId=${activePetId}`);
-        const data = await res.json();
-        setMedications(data.medications || []);
-        setAdministrations(data.administrationsToday || []);
+        const res = await fetch(`/api/medications?petId=${petIdToFetch}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!isCancelled) {
+            setMedications(data.medications || []);
+            setAdministrations(data.administrationsToday || []);
+            if (!activePetId && petIdToFetch) {
+              setActivePetId(petIdToFetch);
+            }
+          }
+        }
       } catch (err) {
-        console.error(err);
+        console.error("Erro ao carregar medicamentos:", err);
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
     loadData();
-  }, [activePetId, refreshTrigger]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activePetId, pets, refreshTrigger]);
 
   const handleAdminister = async (
     administrationId: string,

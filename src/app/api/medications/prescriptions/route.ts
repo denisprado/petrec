@@ -8,16 +8,22 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
-  if (!petId) {
-    return NextResponse.json({ error: "petId é obrigatório" }, { status: 400 });
-  }
-
   try {
+    let targetPetId: string | undefined = petId || undefined;
+    if (!targetPetId) {
+      const firstPet = await prisma.pet.findFirst();
+      targetPetId = firstPet?.id;
+    }
+
+    if (!targetPetId) {
+      return NextResponse.json({ pending: [], history: [] });
+    }
+
     const [pending, history] = await Promise.all([
       // Prescrições que aguardam aprovação do tutor
       prisma.medication.findMany({
         where: {
-          petId,
+          petId: targetPetId,
           status: "pending_tutor_approval",
         },
         include: {
@@ -31,7 +37,7 @@ export async function GET(request: Request) {
       // Prescrições já aprovadas ou arquivadas
       prisma.medication.findMany({
         where: {
-          petId,
+          petId: targetPetId,
           status: { in: ["active", "rejected"] },
           prescribedById: { not: null },
         },

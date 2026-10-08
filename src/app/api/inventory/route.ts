@@ -6,13 +6,19 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
-  if (!petId) {
-    return NextResponse.json({ error: "petId é obrigatório" }, { status: 400 });
-  }
-
   try {
+    let targetPetId: string | undefined = petId || undefined;
+    if (!targetPetId) {
+      const firstPet = await prisma.pet.findFirst();
+      targetPetId = firstPet?.id;
+    }
+
+    if (!targetPetId) {
+      return NextResponse.json({ items: [] });
+    }
+
     const items = await prisma.inventoryItem.findMany({
-      where: { petId },
+      where: { petId: targetPetId },
       include: {
         medication: true,
         transactions: {

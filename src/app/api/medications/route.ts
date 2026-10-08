@@ -8,14 +8,20 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
-  if (!petId) {
-    return NextResponse.json({ error: "petId é obrigatório" }, { status: 400 });
-  }
-
   try {
+    let targetPetId: string | undefined = petId || undefined;
+    if (!targetPetId) {
+      const firstPet = await prisma.pet.findFirst();
+      targetPetId = firstPet?.id;
+    }
+
+    if (!targetPetId) {
+      return NextResponse.json({ medications: [], administrationsToday: [] });
+    }
+
     const [medications, administrationsToday] = await Promise.all([
       prisma.medication.findMany({
-        where: { petId },
+        where: { petId: targetPetId },
         include: {
           schedules: true,
           inventoryItem: true,
@@ -25,7 +31,7 @@ export async function GET(request: Request) {
       }),
       prisma.medicationAdministration.findMany({
         where: {
-          petId,
+          petId: targetPetId,
           scheduledAt: {
             gte: startOfDay(new Date()),
           },

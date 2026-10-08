@@ -27,7 +27,7 @@ import { format, differenceInCalendarDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function SaudePage() {
-  const { activePetId, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
+  const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [data, setData] = useState<any>({
     vaccines: [],
     weightHistory: [],
@@ -90,40 +90,59 @@ export default function SaudePage() {
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
+    let isCancelled = false;
+
     async function loadHealthData() {
-      if (!activePetId) return;
+      const petIdToFetch = activePetId || pets[0]?.id;
+      if (!petIdToFetch) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
         const [healthRes, prescRes, notesRes] = await Promise.all([
-          fetch(`/api/saude?petId=${activePetId}`),
-          fetch(`/api/medications/prescriptions?petId=${activePetId}`),
-          fetch(`/api/saude/notas?petId=${activePetId}&userId=${currentUser.id}`),
+          fetch(`/api/saude?petId=${petIdToFetch}`),
+          fetch(`/api/medications/prescriptions?petId=${petIdToFetch}`),
+          fetch(`/api/saude/notas?petId=${petIdToFetch}&userId=${currentUser.id}`),
         ]);
 
         if (healthRes.ok) {
           const json = await healthRes.json();
-          setData(json);
+          if (!isCancelled) setData(json);
         }
 
         if (prescRes.ok) {
           const json = await prescRes.json();
-          setPrescriptions(json);
+          if (!isCancelled) setPrescriptions(json);
         }
 
         if (notesRes.ok) {
           const json = await notesRes.json();
-          setClinicalNotes(json.notes || []);
-          setUserCanViewPrivateVetNotes(json.userCanViewPrivateVetNotes || false);
+          if (!isCancelled) {
+            setClinicalNotes(json.notes || []);
+            setUserCanViewPrivateVetNotes(json.userCanViewPrivateVetNotes || false);
+          }
+        }
+
+        if (!activePetId && petIdToFetch && !isCancelled) {
+          setActivePetId(petIdToFetch);
         }
       } catch (err) {
         console.error("Erro ao carregar dados de saúde:", err);
       } finally {
-        setLoading(false);
+        if (!isCancelled) {
+          setLoading(false);
+        }
       }
     }
 
     loadHealthData();
-  }, [activePetId, currentUser.id, refreshTrigger]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activePetId, pets, currentUser.id, refreshTrigger]);
 
   const handleAddWeight = async (e: React.FormEvent) => {
     e.preventDefault();

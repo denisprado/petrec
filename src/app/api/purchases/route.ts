@@ -8,14 +8,20 @@ export async function GET(request: Request) {
   const petId = searchParams.get("petId");
   const userId = searchParams.get("userId");
 
-  if (!petId) {
-    return NextResponse.json({ error: "petId é obrigatório" }, { status: 400 });
-  }
-
   try {
+    let targetPetId: string | undefined = petId || undefined;
+    if (!targetPetId) {
+      const firstPet = await prisma.pet.findFirst();
+      targetPetId = firstPet?.id;
+    }
+
+    if (!targetPetId) {
+      return NextResponse.json({ purchases: [], financialsBlocked: false });
+    }
+
     if (userId) {
       const membership = await prisma.petMember.findUnique({
-        where: { petId_userId: { petId, userId } },
+        where: { petId_userId: { petId: targetPetId, userId } },
       });
       if (membership) {
         const perms = getRolePermissions(membership.role);
@@ -30,7 +36,7 @@ export async function GET(request: Request) {
     }
 
     const purchases = await prisma.purchase.findMany({
-      where: { petId },
+      where: { petId: targetPetId },
       include: {
         user: true,
         items: {
