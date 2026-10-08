@@ -36,35 +36,35 @@ interface AppContextType {
 
 export const DEMO_USERS: DemoUser[] = [
   {
-    id: "ks7endyw8ycn8cnpdg1aywjrnd8fws99",
+    id: "ks7er4b93nm6erj3x0z1regwyn8fxfk5",
     name: "Denis Forigo",
     email: "denis@petrec.app",
     avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Owner (Proprietário)",
   },
   {
-    id: "ks7cmjwtpwt8xxgvq83erqtcbs8fwa34",
+    id: "ks79f77bxgkddpqaw6yxqg42yh8fxcr3",
     name: "Ana Silva",
     email: "ana@petrec.app",
     avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Co-owner (Coproprietária)",
   },
   {
-    id: "ks7adge2fy5y4nezk2cg3tg1b58fxycz",
+    id: "ks7d0qz0c65tz2d9a3k70w06nn8fxqxk",
     name: "João Cuidador",
     email: "joao@petrec.app",
     avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Caregiver (Cuidador)",
   },
   {
-    id: "ks7drf6ytedpxjdqsfmdyfznhs8fxr7h",
+    id: "ks71njatd3kzzac1g9ad793fbd8fw1ny",
     name: "Dra. Camila Ramos",
     email: "camila.vet@petrec.app",
     avatar: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Médica Veterinária (CRMV-SP 24890)",
   },
   {
-    id: "ks76896mfy5m6ftvbg4xenyn2x8fxz6j",
+    id: "ks73gqd5bnaa1nps2xvcw5mmqd8fwd0w",
     name: "Carlos Sitter",
     email: "carlos.sitter@petrec.app",
     avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
