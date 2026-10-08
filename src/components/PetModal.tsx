@@ -3,6 +3,9 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useApp } from "@/context/AppContext";
+import { useMutation } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import { Id } from "../../convex/_generated/dataModel";
 import {
   X,
   PawPrint,
@@ -12,6 +15,7 @@ import {
   CheckCircle2,
   Sparkles,
 } from "lucide-react";
+
 
 interface PetModalProps {
   isOpen: boolean;
@@ -107,6 +111,10 @@ export function PetModal({
 
   if (!isOpen || !mounted) return null;
 
+  const createPetMutation = useMutation(api.pets.create);
+  const updatePetMutation = useMutation(api.pets.update);
+  const removePetMutation = useMutation(api.pets.remove);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
@@ -119,91 +127,71 @@ export function PetModal({
 
     try {
       if (mode === "create") {
-        const res = await fetch("/api/pets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: name.trim(),
-            species,
-            breed: breed.trim(),
-            sex,
-            birthDate: birthDate || null,
-            weight: weight ? parseFloat(weight) : null,
-            photo,
-            color: color.trim(),
-            microchip: microchip.trim(),
-            notes: notes.trim(),
-            userId: currentUser.id,
-          }),
+        const pet = await createPetMutation({
+          name: name.trim(),
+          species,
+          breed: breed.trim() || undefined,
+          sex: sex || undefined,
+          birthDate: birthDate || undefined,
+          weight: weight ? parseFloat(weight) : undefined,
+          photo: photo || undefined,
+          color: color.trim() || undefined,
+          microchip: microchip.trim() || undefined,
+          notes: notes.trim() || undefined,
+          userEmail: currentUser?.email,
         });
 
-        const data = await res.json();
-        if (res.ok && data.pet) {
-          setActivePetId(data.pet.id);
+        if (pet) {
+          const newPetId = (pet as any)._id || (pet as any).id;
+          setActivePetId(newPetId);
           triggerRefresh();
-          onSuccess?.(data.pet);
+          onSuccess?.(pet);
           onClose();
-        } else {
-          setErrorMsg(data.error || "Erro ao cadastrar animal.");
         }
       } else {
-        // Edit mode
-        const res = await fetch("/api/pets", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            petId: initialData?.id,
-            userId: currentUser.id,
-            name: name.trim(),
-            species,
-            breed: breed.trim(),
-            sex,
-            birthDate: birthDate || null,
-            weight: weight ? parseFloat(weight) : null,
-            photo,
-            color: color.trim(),
-            microchip: microchip.trim(),
-            notes: notes.trim(),
-          }),
+        const targetPetId = (initialData?._id || initialData?.id) as Id<"pets">;
+        const pet = await updatePetMutation({
+          petId: targetPetId,
+          name: name.trim(),
+          species,
+          breed: breed.trim() || undefined,
+          sex: sex || undefined,
+          birthDate: birthDate || undefined,
+          weight: weight ? parseFloat(weight) : undefined,
+          photo: photo || undefined,
+          color: color.trim() || undefined,
+          microchip: microchip.trim() || undefined,
+          notes: notes.trim() || undefined,
         });
 
-        const data = await res.json();
-        if (res.ok && data.pet) {
-          triggerRefresh();
-          onSuccess?.(data.pet);
-          onClose();
-        } else {
-          setErrorMsg(data.error || "Erro ao atualizar animal.");
-        }
+        triggerRefresh();
+        onSuccess?.(pet);
+        onClose();
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "Erro inesperado.");
+      console.error("Erro ao salvar pet via Convex:", err);
+      setErrorMsg(err.message || "Erro inesperado ao salvar pet.");
     } finally {
       setLoading(false);
     }
   };
 
   const handleDelete = async () => {
-    if (!initialData?.id) return;
+    const targetPetId = (initialData?._id || initialData?.id) as Id<"pets">;
+    if (!targetPetId) return;
     setLoading(true);
     try {
-      const res = await fetch(
-        `/api/pets?petId=${initialData.id}&userId=${currentUser.id}`,
-        { method: "DELETE" }
-      );
-      const data = await res.json();
-      if (res.ok) {
-        triggerRefresh();
-        onClose();
-      } else {
-        setErrorMsg(data.error || "Erro ao excluir pet.");
-      }
+      await removePetMutation({ petId: targetPetId });
+      triggerRefresh();
+      onClose();
     } catch (err: any) {
+      console.error("Erro ao excluir pet via Convex:", err);
       setErrorMsg(err.message || "Erro ao excluir.");
     } finally {
       setLoading(false);
     }
   };
+
 
   return createPortal(
     <div className="fixed inset-0 z-[99999] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">

@@ -31,9 +31,16 @@ export const getById = query({
   },
 });
 
+export const listAll = query({
+  handler: async (ctx) => {
+    return await ctx.db.query("pets").collect();
+  },
+});
+
 export const create = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
+    userEmail: v.optional(v.string()),
     name: v.string(),
     species: v.string(),
     breed: v.optional(v.string()),
@@ -46,7 +53,32 @@ export const create = mutation({
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { userId, ...petData } = args;
+    const { userId: explicitUserId, userEmail, ...petData } = args;
+
+    // Resolver usuário vinculado: por ID explícito, por email, ou primeiro usuário
+    let userId = explicitUserId;
+    if (!userId && userEmail) {
+      const user = await ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", userEmail))
+        .first();
+      if (user) {
+        userId = user._id;
+      }
+    }
+    if (!userId) {
+      const firstUser = await ctx.db.query("users").first();
+      if (firstUser) {
+        userId = firstUser._id;
+      } else {
+        userId = await ctx.db.insert("users", {
+          name: "Denis Forigo",
+          email: "denis@petrec.app",
+          avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+          timezone: "America/Sao_Paulo",
+        });
+      }
+    }
 
     // 1. Criar o Pet
     const petId = await ctx.db.insert("pets", petData);
@@ -78,7 +110,7 @@ export const create = mutation({
       entityId: petId,
     });
 
-    return petId;
+    return await ctx.db.get(petId);
   },
 });
 
@@ -99,13 +131,14 @@ export const update = mutation({
   handler: async (ctx, args) => {
     const { petId, ...updates } = args;
     await ctx.db.patch(petId, updates);
+    return await ctx.db.get(petId);
   },
 });
 
 export const remove = mutation({
   args: {
     petId: v.id("pets"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
     // 1. Deletar membros

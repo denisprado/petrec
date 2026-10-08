@@ -36,41 +36,42 @@ interface AppContextType {
 
 export const DEMO_USERS: DemoUser[] = [
   {
-    id: "",
+    id: "ks7endyw8ycn8cnpdg1aywjrnd8fws99",
     name: "Denis Forigo",
-    email: "denis@exemplo.com",
+    email: "denis@petrec.app",
     avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Owner (Proprietário)",
   },
   {
-    id: "",
+    id: "ks7cmjwtpwt8xxgvq83erqtcbs8fwa34",
     name: "Ana Silva",
-    email: "ana@exemplo.com",
+    email: "ana@petrec.app",
     avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Co-owner (Coproprietária)",
   },
   {
-    id: "",
+    id: "ks7adge2fy5y4nezk2cg3tg1b58fxycz",
     name: "João Cuidador",
-    email: "joao@exemplo.com",
+    email: "joao@petrec.app",
     avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Caregiver (Cuidador)",
   },
   {
-    id: "",
+    id: "ks7drf6ytedpxjdqsfmdyfznhs8fxr7h",
     name: "Dra. Camila Ramos",
-    email: "camila@veterinaria.com",
+    email: "camila.vet@petrec.app",
     avatar: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Médica Veterinária (CRMV-SP 24890)",
   },
   {
-    id: "",
+    id: "ks76896mfy5m6ftvbg4xenyn2x8fxz6j",
     name: "Carlos Sitter",
-    email: "carlos@petsitter.com",
+    email: "carlos.sitter@petrec.app",
     avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Pet Sitter / Cuidador Pro",
   },
 ];
+
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
@@ -119,28 +120,62 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           fetch(`/api/tutores${initialPetId ? `?petId=${initialPetId}` : ""}`).catch(() => null),
         ]);
 
-        const data = await dashRes.json();
+        let data: any = null;
+        if (dashRes && dashRes.ok) {
+          try {
+            data = await dashRes.json();
+          } catch {
+            data = null;
+          }
+        }
         let allDbUsers: any[] = [];
         if (tutoresRes && tutoresRes.ok) {
-          const tutoresData = await tutoresRes.json();
-          allDbUsers = tutoresData.allUsers || [];
+          try {
+            const tutoresData = await tutoresRes.json();
+            allDbUsers = tutoresData.allUsers || [];
+          } catch {
+            allDbUsers = [];
+          }
         }
 
-        const fetchedPets: PetSummary[] = data.pets || [];
+        let fetchedPets: PetSummary[] = data?.pets || [];
+
+        // Fallback: se o dashboard não retornou pets (ex: Vercel sem SQLite), busca direto da API Convex de pets
+        if (fetchedPets.length === 0) {
+          try {
+            const petsRes = await fetch("/api/pets");
+            if (petsRes.ok) {
+              const petsData = await petsRes.json();
+              if (petsData.pets && petsData.pets.length > 0) {
+                fetchedPets = petsData.pets.map((p: any) => ({
+                  id: p._id || p.id,
+                  name: p.name,
+                  photo: p.photo || null,
+                  species: p.species || "Cão",
+                  statusColor: "green",
+                  statusText: "Tudo em dia",
+                }));
+              }
+            }
+          } catch (e) {
+            console.warn("Falha no fallback de pets Convex:", e);
+          }
+        }
+
         setPets(fetchedPets);
 
         // Resolver pet ativo preservando o pet salvo ou primeiro disponível
         const resolvedPetId =
           initialPetId && fetchedPets.some((p) => p.id === initialPetId)
             ? initialPetId
-            : data.activePet?.id || (fetchedPets[0]?.id ?? "");
+            : data?.activePet?.id || (fetchedPets[0]?.id ?? "");
 
         setActivePetIdState(resolvedPetId);
         if (typeof window !== "undefined" && resolvedPetId) {
           localStorage.setItem("petrec_active_pet_id", resolvedPetId);
         }
 
-        const members = data.activePet?.members || [];
+        const members = data?.activePet?.members || [];
         setPetMembers(members);
 
         // Mapear IDs reais dos usuários cadastrados no banco
@@ -181,16 +216,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     async function updatePetMembers() {
       try {
-        const res = await fetch(`/api/dashboard${activePetId ? `?petId=${activePetId}` : ""}`);
-        const data = await res.json();
-        if (data.activePet?.members) {
-          setPetMembers(data.activePet.members);
-        }
-        if (data.pets) {
-          setPets(data.pets);
-        }
-        if (!activePetId && data.activePet?.id) {
-          setActivePetIdState(data.activePet.id);
+        const res = await fetch(`/api/dashboard${activePetId ? `?petId=${activePetId}` : ""}`).catch(() => null);
+        if (res && res.ok) {
+          const data = await res.json();
+          if (data.activePet?.members) {
+            setPetMembers(data.activePet.members);
+          }
+          if (data.pets && data.pets.length > 0) {
+            setPets(data.pets);
+          }
+          if (!activePetId && data.activePet?.id) {
+            setActivePetIdState(data.activePet.id);
+          }
+        } else {
+          // Atualiza lista via API de pets (Convex)
+          const petsRes = await fetch("/api/pets").catch(() => null);
+          if (petsRes && petsRes.ok) {
+            const petsData = await petsRes.json();
+            if (petsData.pets) {
+              setPets(
+                petsData.pets.map((p: any) => ({
+                  id: p._id || p.id,
+                  name: p.name,
+                  photo: p.photo || null,
+                  species: p.species || "Cão",
+                  statusColor: "green",
+                  statusText: "Tudo em dia",
+                }))
+              );
+            }
+          }
         }
       } catch (err) {
         console.error("Erro ao atualizar membros do pet:", err);
@@ -207,16 +262,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setUserRole(member.role);
     } else {
       // Regras de fallback para demonstração
-      if (currentUser.email === "denis@exemplo.com") {
+      if (
+        currentUser.email === "denis@petrec.app" ||
+        currentUser.email === "denis@exemplo.com"
+      ) {
         setUserRole("owner");
-      } else if (currentUser.email === "ana@exemplo.com" && activePetId) {
-        // Ana é co-owner do Rex e da Luna
-        const isAnaMember = petMembers.some((m: any) => m.user?.email === "ana@exemplo.com");
-        setUserRole(isAnaMember ? "co_owner" : "viewer");
+      } else if (
+        (currentUser.email === "ana@petrec.app" ||
+          currentUser.email === "ana@exemplo.com") &&
+        activePetId
+      ) {
+        setUserRole("co_owner");
       } else {
         setUserRole("viewer");
       }
     }
+
   }, [currentUser, petMembers, activePetId]);
 
   const permissions = getRolePermissions(userRole);
