@@ -109,11 +109,11 @@ export function PetModal({
     setShowDeleteConfirm(false);
   }, [initialData, mode, isOpen]);
 
-  if (!isOpen || !mounted) return null;
-
   const createPetMutation = useMutation(api.pets.create);
   const updatePetMutation = useMutation(api.pets.update);
   const removePetMutation = useMutation(api.pets.remove);
+
+  if (!isOpen || !mounted) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

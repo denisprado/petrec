@@ -27,9 +27,28 @@ export const listByUser = query({
 export const getById = query({
   args: { petId: v.id("pets") },
   handler: async (ctx, args) => {
-    return await ctx.db.get(args.petId);
+    const pet = await ctx.db.get(args.petId);
+    if (!pet) return null;
+    const members = await ctx.db
+      .query("petMembers")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+    const membersWithUser = await Promise.all(
+      members.map(async (m) => {
+        const user = await ctx.db.get(m.userId);
+        return {
+          ...m,
+          user,
+        };
+      })
+    );
+    return {
+      ...pet,
+      members: membersWithUser,
+    };
   },
 });
+
 
 export const listAll = query({
   handler: async (ctx) => {

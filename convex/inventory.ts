@@ -11,6 +11,37 @@ export const listByPet = query({
   },
 });
 
+export const listShoppingList = query({
+  args: { petId: v.id("pets") },
+  handler: async (ctx, args) => {
+    const items = await ctx.db
+      .query("shoppingListItems")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+    return items;
+  },
+});
+
+export const listActivityLogs = query({
+  args: { petId: v.id("pets") },
+  handler: async (ctx, args) => {
+    const logs = await ctx.db
+      .query("activityLogs")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .order("desc")
+      .take(15);
+    return await Promise.all(
+      logs.map(async (l) => {
+        const user = l.userId ? await ctx.db.get(l.userId) : null;
+        return {
+          ...l,
+          user,
+        };
+      })
+    );
+  },
+});
+
 export const recordConsumption = mutation({
   args: {
     inventoryItemId: v.id("inventoryItems"),

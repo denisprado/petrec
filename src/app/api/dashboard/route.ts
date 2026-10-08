@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../convex/_generated/api";
 import { calculateStockForecast } from "@/lib/stockCalculation";
 import { differenceInCalendarDays, startOfDay } from "date-fns";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://robust-bullfrog-290.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,37 +15,9 @@ export async function GET(request: Request) {
   const petId = searchParams.get("petId");
 
   try {
-    // 1. Obter todos os pets associados ao usuário (com fallback para todos se o usuário não tiver membros ainda)
-    let pets: any[] = [];
-    if (userId) {
-      const userMembers = await prisma.petMember.findMany({
-        where: { userId },
-        include: {
-          pet: {
-            include: {
-              members: { include: { user: true } },
-            },
-          },
-        },
-      });
-      pets = userMembers.map((m) => ({ ...m.pet, userRole: m.role }));
-    }
+    const allPets = await convex.query(api.pets.listAll);
 
-    if (pets.length === 0) {
-      const allPets = await prisma.pet.findMany({
-        include: {
-          members: {
-            include: { user: true },
-          },
-        },
-      });
-      pets = allPets.map((p) => ({
-        ...p,
-        userRole: p.members.find((m) => m.userId === userId)?.role || "owner",
-      }));
-    }
-
-    if (pets.length === 0) {
+    if (allPets.length === 0) {
       return NextResponse.json({
         pets: [],
         activePet: null,
@@ -59,86 +37,48 @@ export async function GET(request: Request) {
       });
     }
 
-    // Identificar pet ativo
-    const activePet = (petId ? pets.find((p) => p.id === petId) : null) || pets[0];
+    const activePetBasic = (petId ? allPets.find((p) => p._id === petId) : null) || allPets[0];
+    const activePetId = activePetBasic._id;
 
-    // 2. Carregar dados completos do Pet Ativo
     const [
+      activePetWithMembers,
       inventoryItems,
       medications,
       administrationsToday,
-      vaccinations,
-      appointments,
+      petHealth,
       shoppingList,
       recentActivities,
-      members,
     ] = await Promise.all([
-      prisma.inventoryItem.findMany({
-        where: { petId: activePet.id },
-        include: { medication: true },
-      }),
-      prisma.medication.findMany({
-        where: { petId: activePet.id },
-        include: {
-          schedules: true,
-          inventoryItem: true,
-          prescribedBy: { include: { professionalProfile: true } },
-        },
-      }),
-      prisma.medicationAdministration.findMany({
-        where: {
-          petId: activePet.id,
-          scheduledAt: {
-            gte: startOfDay(new Date()),
-          },
-        },
-        include: {
-          medication: true,
-          administeredBy: true,
-        },
-        orderBy: { scheduledAt: "asc" },
-      }),
-      prisma.vaccination.findMany({
-        where: { petId: activePet.id },
-        orderBy: { nextDueDate: "asc" },
-      }),
-      prisma.appointment.findMany({
-        where: { petId: activePet.id },
-        orderBy: { date: "asc" },
-      }),
-      prisma.shoppingListItem.findMany({
-        where: { petId: activePet.id },
-        include: { inventoryItem: true, purchasedBy: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.activityLog.findMany({
-        where: { petId: activePet.id },
-        include: { user: true },
-        orderBy: { timestamp: "desc" },
-        take: 10,
-      }),
-      prisma.petMember.findMany({
-        where: { petId: activePet.id },
-        include: { user: true },
-      }),
+      convex.query(api.pets.getById, { petId: activePetId }).catch(() => activePetBasic),
+      convex.query(api.inventory.listByPet, { petId: activePetId }).catch(() => []),
+      convex.query(api.medications.listByPet, { petId: activePetId }).catch(() => []),
+      convex.query(api.medications.getAdministrationsToday, { petId: activePetId }).catch(() => []),
+      convex.query(api.health.getPetHealth, { petId: activePetId }).catch(() => ({
+        weights: [],
+        vaccines: [],
+        appointments: [],
+        clinicalNotes: [],
+        healthEvents: [],
+      })),
+      convex.query(api.inventory.listShoppingList, { petId: activePetId }).catch(() => []),
+      convex.query(api.inventory.listActivityLogs, { petId: activePetId }).catch(() => []),
     ]);
 
-    // 3. Processar Previsão Contínua de Estoque para cada item
-    const stockForecasts = inventoryItems.map((item) => {
+    const stockForecasts = (inventoryItems || []).map((item: any) => {
       const forecast = calculateStockForecast({
         currentQuantity: item.currentQuantity,
         dailyConsumption: item.dailyConsumption,
         unit: item.unit,
-        purchaseLeadTimeDays: item.purchaseLeadTimeDays,
+        purchaseLeadTimeDays: item.purchaseLeadTimeDays || 7,
       });
 
       return {
         ...item,
+        id: item._id,
         forecast,
       };
     });
 
-    // 4. Filtrar Itens Críticos que Exigem Ação
     const criticalStockItems = stockForecasts.filter(
       (i) =>
         i.forecast.status === "COMPRAR AGORA" ||
@@ -150,12 +90,20 @@ export async function GET(request: Request) {
       (i) => i.forecast.status === "ATENÇÃO"
     );
 
-    // 5. Alertas de Vacinas Próximas (vencendo em até 30 dias)
     const today = new Date();
+    const vaccinations = (petHealth?.vaccines || []).map((v: any) => ({
+      ...v,
+      id: v._id,
+    }));
+    const appointments = (petHealth?.appointments || []).map((a: any) => ({
+      ...a,
+      id: a._id,
+    }));
+
     const upcomingVaccines = vaccinations
-      .filter((v) => v.nextDueDate)
-      .map((v) => {
-        const daysUntil = differenceInCalendarDays(new Date(v.nextDueDate!), today);
+      .filter((v: any) => v.nextDueDate)
+      .map((v: any) => {
+        const daysUntil = differenceInCalendarDays(new Date(v.nextDueDate), today);
         return {
           ...v,
           daysUntil,
@@ -163,100 +111,62 @@ export async function GET(request: Request) {
           isOverdue: daysUntil < 0,
         };
       })
-      .filter((v) => v.isUpcoming || v.isOverdue);
+      .filter((v: any) => v.isUpcoming || v.isOverdue);
 
-    // 6. Multi-Pet Status Geral (Para o seletor Multi-Pet)
-    const multiPetStatus = await Promise.all(
-      pets.map(async (p) => {
-        const pItems = await prisma.inventoryItem.findMany({ where: { petId: p.id } });
-        const pVaccines = await prisma.vaccination.findMany({ where: { petId: p.id } });
-
-        let statusColor: "green" | "yellow" | "red" = "green";
-        let statusText = "Tudo em dia";
-
-        for (const item of pItems) {
-          const fc = calculateStockForecast({
-            currentQuantity: item.currentQuantity,
-            dailyConsumption: item.dailyConsumption,
-            unit: item.unit,
-            purchaseLeadTimeDays: item.purchaseLeadTimeDays,
-          });
-          if (fc.status === "COMPRAR AGORA" || fc.status === "SEM ESTOQUE") {
-            statusColor = "red";
-            statusText = `${item.name.split(" ")[0]} acabando`;
-            break;
-          } else if (fc.status === "ATENÇÃO") {
-            statusColor = "yellow";
-            statusText = "Estoque em atenção";
-          }
-        }
-
-        if (statusColor === "green") {
-          for (const v of pVaccines) {
-            if (v.nextDueDate) {
-              const days = differenceInCalendarDays(new Date(v.nextDueDate), today);
-              if (days >= 0 && days <= 20) {
-                statusColor = "yellow";
-                statusText = `Vacina em ${days} dias`;
-                break;
-              }
-            }
-          }
-        }
-
-        return {
-          id: p.id,
-          name: p.name,
-          photo: p.photo,
-          species: p.species,
-          statusColor,
-          statusText,
-        };
-      })
-    );
+    const multiPetStatus = allPets.map((p) => ({
+      id: p._id,
+      name: p.name,
+      photo: p.photo || null,
+      species: p.species,
+      statusColor: "green" as const,
+      statusText: "Tudo em dia",
+    }));
 
     return NextResponse.json({
       activePet: {
-        ...activePet,
-        members,
+        ...activePetWithMembers,
+        id: activePetWithMembers?._id || activePetId,
+        members: (activePetWithMembers as any)?.members || [],
       },
       pets: multiPetStatus,
       today: {
-        administrations: administrationsToday,
+        administrations: (administrationsToday || []).map((adm: any) => ({
+          ...adm,
+          id: adm._id,
+        })),
         appointments: appointments.filter(
-          (a) => differenceInCalendarDays(new Date(a.date), today) === 0
+          (a: any) => differenceInCalendarDays(new Date(a.date), today) === 0
         ),
       },
       attention: {
         criticalStock: criticalStockItems,
         attentionStock: attentionStockItems,
         upcomingVaccines,
-        pendingPrescriptions: medications.filter(
-          (m) => m.status === "pending_tutor_approval"
+        pendingPrescriptions: (medications || []).filter(
+          (m: any) => m.status === "pending_tutor_approval"
         ),
         pendingTasksCount:
           criticalStockItems.length +
-          administrationsToday.filter((a) => a.status === "scheduled").length +
-          medications.filter((m) => m.status === "pending_tutor_approval").length,
+          (administrationsToday || []).filter((a: any) => a.status === "scheduled").length,
       },
       purchases: {
-        pendingList: shoppingList.filter((s) => !s.isPurchased),
-        completedList: shoppingList.filter((s) => s.isPurchased),
+        pendingList: (shoppingList || []).filter((s: any) => !s.isPurchased),
+        completedList: (shoppingList || []).filter((s: any) => s.isPurchased),
       },
       health: {
         vaccines: vaccinations,
         upcomingAppointments: appointments.filter(
-          (a) => new Date(a.date) >= startOfDay(today)
+          (a: any) => new Date(a.date) >= startOfDay(today)
         ),
       },
       inventory: stockForecasts,
-      medications,
-      recentActivities,
+      medications: (medications || []).map((m: any) => ({ ...m, id: m._id })),
+      recentActivities: (recentActivities || []).map((l: any) => ({ ...l, id: l._id })),
     });
   } catch (error: any) {
     console.error("Dashboard API error:", error);
     return NextResponse.json(
-      { error: "Erro ao carregar dados do dashboard", details: error.message },
+      { error: "Erro ao carregar dados do dashboard via Convex", details: error.message },
       { status: 500 }
     );
   }
