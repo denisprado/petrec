@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../../convex/_generated/api";
 import { processWhatsAppMessage } from "@/lib/whatsappBot";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://robust-bullfrog-290.convex.cloud"
+);
 
 const VERIFY_TOKEN =
   process.env.WHATSAPP_VERIFY_TOKEN ||
@@ -80,17 +87,44 @@ export async function POST(request: Request) {
                 process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
               const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
+              let sendStatus = "SUCCESS";
+              let sendError: string | undefined = undefined;
+
               if (apiToken && phoneId) {
-                await sendMetaWhatsAppMessage({
+                const sendRes = await sendMetaWhatsAppMessage({
                   to: from,
                   text: botResult.replyText,
                   apiToken,
                   phoneId,
                 });
+
+                if (!sendRes.success) {
+                  sendStatus = "META_ERROR";
+                  sendError =
+                    typeof sendRes.error === "object"
+                      ? JSON.stringify(sendRes.error)
+                      : String(sendRes.error);
+                }
               } else {
+                sendStatus = "CONFIG_MISSING";
+                sendError =
+                  "WHATSAPP_API_TOKEN ou WHATSAPP_PHONE_NUMBER_ID não configurados no ambiente (Vercel).";
                 console.warn(
                   "[WhatsApp Webhook] WHATSAPP_API_TOKEN ou WHATSAPP_PHONE_NUMBER_ID não configurados. Mensagem não enviada à Meta."
                 );
+              }
+
+              // Gravar no histórico de logs do Convex para auditoria e diagnóstico em tempo real
+              try {
+                await convex.mutation(api.whatsapp.logWebhookEvent, {
+                  from: `+${from}`,
+                  messageText: text,
+                  replyText: botResult.replyText,
+                  status: sendStatus,
+                  metaError: sendError,
+                });
+              } catch (logErr) {
+                console.error("[WhatsApp Webhook] Falha ao gravar log no Convex:", logErr);
               }
             }
           }
@@ -103,7 +137,10 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("[WhatsApp Webhook Error]:", error);
     // Retornamos 200 para evitar que a Meta fique re-enviando loops de mensagens em erro de aplicação
-    return NextResponse.json({ status: "ERROR_PROCESSED", error: error.message }, { status: 200 });
+    return NextResponse.json(
+      { status: "ERROR_PROCESSED", error: error.message },
+      { status: 200 }
+    );
   }
 }
 
@@ -112,7 +149,7 @@ async function sendMetaWhatsAppMessage(params: {
   text: string;
   apiToken: string;
   phoneId: string;
-}) {
+}): Promise<{ success: boolean; error?: any }> {
   const url = `https://graph.facebook.com/v21.0/${params.phoneId}/messages`;
 
   try {
@@ -137,10 +174,13 @@ async function sendMetaWhatsAppMessage(params: {
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       console.error("[Meta API Send Error]:", JSON.stringify(errData, null, 2));
+      return { success: false, error: errData };
     } else {
       console.log(`[Meta API Send Success] Mensagem enviada para ${params.to}`);
+      return { success: true };
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error("[Meta API Network Error]:", err);
+    return { success: false, error: err.message };
   }
 }

@@ -55,6 +55,37 @@ export default function WhatsAppPage() {
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Estados de diagnóstico Meta Cloud API & Webhooks
+  const [diagnostics, setDiagnostics] = useState<any | null>(null);
+  const [loadingDiag, setLoadingDiag] = useState(false);
+  const [sendingTestMessage, setSendingTestMessage] = useState(false);
+  const [testSendResult, setTestSendResult] = useState<any | null>(null);
+
+  const fetchDiagnostics = async (testPhone?: string) => {
+    if (testPhone) setSendingTestMessage(true);
+    else setLoadingDiag(true);
+    try {
+      const url = testPhone
+        ? `/api/whatsapp/diagnostics?testTo=${encodeURIComponent(testPhone)}`
+        : `/api/whatsapp/diagnostics`;
+      const res = await fetch(url);
+      const data = await res.json();
+      setDiagnostics(data);
+      if (testPhone) {
+        setTestSendResult(data.testSendResult);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingDiag(false);
+      setSendingTestMessage(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDiagnostics();
+  }, []);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Carregar status do WhatsApp do usuário logado
@@ -480,6 +511,192 @@ export default function WhatsAppPage() {
                 </li>
               </ol>
             </div>
+          </div>
+
+          {/* Card de Diagnóstico em Tempo Real (Vercel & Meta) */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Zap className="w-4 h-4 text-amber-500" />
+                <span>Diagnóstico em Tempo Real (Vercel & Meta)</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => fetchDiagnostics()}
+                disabled={loadingDiag}
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-800 transition cursor-pointer"
+                title="Recarregar diagnóstico"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingDiag ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+
+            {diagnostics && (
+              <div className="space-y-3 text-xs">
+                {/* Status das Variáveis na Vercel */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                  <div className="font-bold text-slate-700 mb-1 flex items-center justify-between">
+                    <span>Variáveis de Ambiente no Servidor:</span>
+                    <span className="text-[10px] text-slate-400">Verificação ao Vivo</span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-[11px]">
+                    <span className="text-slate-600">WHATSAPP_API_TOKEN:</span>
+                    {diagnostics.environment.hasApiToken ? (
+                      <span className="text-emerald-700 font-bold flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Configurado
+                      </span>
+                    ) : (
+                      <span className="text-red-600 font-bold">❌ Ausente na Vercel</span>
+                    )}
+                  </div>
+
+                  <div className="flex justify-between items-center text-[11px]">
+                    <span className="text-slate-600">WHATSAPP_PHONE_NUMBER_ID:</span>
+                    {diagnostics.environment.hasPhoneId ? (
+                      <span className="text-emerald-700 font-bold flex items-center gap-1">
+                        <Check className="w-3 h-3" /> {diagnostics.environment.phoneId}
+                      </span>
+                    ) : (
+                      <span className="text-red-600 font-bold">❌ Ausente na Vercel</span>
+                    )}
+                  </div>
+
+                  <div className="flex justify-between items-center text-[11px]">
+                    <span className="text-slate-600">WHATSAPP_VERIFY_TOKEN:</span>
+                    <span className="text-emerald-700 font-bold flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Configurado
+                    </span>
+                  </div>
+
+                  {(!diagnostics.environment.hasApiToken || !diagnostics.environment.hasPhoneId) && (
+                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg text-red-800 text-[11px] leading-relaxed">
+                      ⚠️ <strong>Atenção:</strong> Suas credenciais não estão configuradas na Vercel!
+                      <br />
+                      Acesse <strong>vercel.com &gt; Seu Projeto &gt; Settings &gt; Environment Variables</strong> e adicione as chaves <code>WHATSAPP_API_TOKEN</code> e <code>WHATSAPP_PHONE_NUMBER_ID</code>.
+                    </div>
+                  )}
+                </div>
+
+                {/* Status da Meta Cloud API */}
+                {diagnostics.metaApiLive && (
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                    <span className="font-bold text-slate-700 block mb-0.5">
+                      Status da Meta Cloud API:
+                    </span>
+                    {diagnostics.metaApiLive.display_phone_number ? (
+                      <p className="text-[11px] text-emerald-800">
+                        ✓ Conexão com o Facebook ativa:{" "}
+                        <strong>{diagnostics.metaApiLive.display_phone_number}</strong> (Status:{" "}
+                        {diagnostics.metaApiLive.quality_rating})
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-red-700 font-mono">
+                        {JSON.stringify(diagnostics.metaApiLive.error || diagnostics.metaApiLive)}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Botão de Disparo de Teste Real */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = connectedPhone || phoneInput;
+                      if (!target) {
+                        alert("Por favor, informe seu telefone no campo acima.");
+                        return;
+                      }
+                      fetchDiagnostics(target);
+                    }}
+                    disabled={sendingTestMessage || !diagnostics.environment.hasApiToken}
+                    className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>
+                      {sendingTestMessage
+                        ? "Enviando mensagem pela Meta..."
+                        : `Testar Envio Real para ${connectedPhone || phoneInput}`}
+                    </span>
+                  </button>
+
+                  {testSendResult && (
+                    <div className="mt-2 p-2.5 rounded-lg border text-[11px]">
+                      {testSendResult.messages ? (
+                        <div className="text-emerald-800 bg-emerald-50 border-emerald-200 p-2 rounded">
+                          🎉 <strong>Sucesso!</strong> A Meta despachou a mensagem de teste com ID:{" "}
+                          <code>{testSendResult.messages[0]?.id}</code>. Verifique o seu WhatsApp!
+                        </div>
+                      ) : (
+                        <div className="text-red-800 bg-red-50 border-red-200 p-2 rounded space-y-1">
+                          <strong>Erro ao enviar pela Meta:</strong>
+                          <p className="font-mono text-[10px]">
+                            {testSendResult.error?.message || JSON.stringify(testSendResult)}
+                          </p>
+                          {testSendResult.error?.code === 131030 && (
+                            <p className="text-[11px] text-red-900 font-semibold mt-1">
+                              👉 <strong>Causa identificada:</strong> Seu número de telefone ainda não foi adicionado à <em>Lista de Destinatários Permitidos</em> no Meta for Developers (WhatsApp &gt; Início da API &gt; Para).
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Histórico dos Últimos Webhooks Recebidos */}
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <div className="flex justify-between items-center text-slate-700 font-bold">
+                    <span>Últimos Webhooks Recebidos da Meta:</span>
+                    <button
+                      type="button"
+                      onClick={() => fetchDiagnostics()}
+                      className="text-[10px] text-emerald-700 hover:underline cursor-pointer"
+                    >
+                      Atualizar
+                    </button>
+                  </div>
+
+                  {diagnostics.webhookLogs && diagnostics.webhookLogs.length > 0 ? (
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                      {diagnostics.webhookLogs.map((log: any, idx: number) => (
+                        <div
+                          key={log._id || idx}
+                          className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-[11px] space-y-0.5"
+                        >
+                          <div className="flex justify-between items-center">
+                            <span className="font-mono font-bold text-slate-800">
+                              {log.from}: "{log.messageText}"
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                log.status === "SUCCESS"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-red-100 text-red-800"
+                              }`}
+                            >
+                              {log.status}
+                            </span>
+                          </div>
+                          {log.metaError && (
+                            <p className="text-red-600 text-[10px] truncate" title={log.metaError}>
+                              Erro Meta: {log.metaError}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic p-2 bg-slate-50 rounded-lg text-center">
+                      Nenhum webhook recebido da Meta até o momento.
+                      <br />
+                      (Verifique se o campo "messages" está assinado na Meta)
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Estado Interno da Máquina de Estados (Contexto do Bot) */}

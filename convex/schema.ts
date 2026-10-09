@@ -208,4 +208,13 @@ export default defineSchema({
     entityId: v.optional(v.string()),
     metadata: v.optional(v.string()),
   }).index("by_pet", ["petId"]),
+
+  whatsappWebhookLogs: defineTable({
+    from: v.string(),
+    messageText: v.string(),
+    replyText: v.string(),
+    status: v.string(), // "SUCCESS", "META_ERROR", "CONFIG_MISSING"
+    metaError: v.optional(v.string()),
+    timestamp: v.number(),
+  }).index("by_timestamp", ["timestamp"]),
 });

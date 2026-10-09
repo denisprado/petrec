@@ -189,3 +189,34 @@ export const updateSession = mutation({
   },
 });
 
+export const logWebhookEvent = mutation({
+  args: {
+    from: v.string(),
+    messageText: v.string(),
+    replyText: v.string(),
+    status: v.string(),
+    metaError: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("whatsappWebhookLogs", {
+      from: args.from,
+      messageText: args.messageText,
+      replyText: args.replyText,
+      status: args.status,
+      metaError: args.metaError,
+      timestamp: Date.now(),
+    });
+  },
+});
+
+export const listWebhookLogs = query({
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("whatsappWebhookLogs")
+      .withIndex("by_timestamp")
+      .order("desc")
+      .take(10);
+  },
+});
+
+
