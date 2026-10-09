@@ -37,6 +37,16 @@ export default function EstoquePage() {
   const [newDailyConsumption, setNewDailyConsumption] = useState<string>("");
   const [newLeadTime, setNewLeadTime] = useState<string>("");
 
+  // Modal de cadastro de novo item de estoque (ex: ração)
+  const [showNewItemModal, setShowNewItemModal] = useState(false);
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemCategory, setNewItemCategory] = useState("racao");
+  const [newItemUnit, setNewItemUnit] = useState("g");
+  const [newItemCurrentQty, setNewItemCurrentQty] = useState("");
+  const [newItemDailyConsumption, setNewItemDailyConsumption] = useState("");
+  const [newItemLeadTime, setNewItemLeadTime] = useState("7");
+  const [newItemNotes, setNewItemNotes] = useState("");
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -136,6 +146,46 @@ export default function EstoquePage() {
     }
   };
 
+  const handleCreateItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newItemName || !activePetId) return;
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          isNewItem: true,
+          petId: activePetId,
+          name: newItemName,
+          category: newItemCategory,
+          unit: newItemUnit,
+          currentQuantity: parseFloat(newItemCurrentQty || "0"),
+          dailyConsumption: parseFloat(newItemDailyConsumption || "0"),
+          purchaseLeadTimeDays: parseInt(newItemLeadTime || "7"),
+          notes: newItemNotes,
+          userId: currentUser.id,
+        }),
+      });
+
+      if (res.ok) {
+        setFeedback(`✓ "${newItemName}" adicionado ao estoque com sucesso!`);
+        setTimeout(() => setFeedback(null), 3500);
+        setShowNewItemModal(false);
+        setNewItemName("");
+        setNewItemCurrentQty("");
+        setNewItemDailyConsumption("");
+        setNewItemNotes("");
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 space-y-6">
       {/* Toast */}
@@ -157,6 +207,14 @@ export default function EstoquePage() {
             O estoque e o consumo real determinam a data ideal de compra com antecedência configurada.
           </p>
         </div>
+
+        <button
+          onClick={() => setShowNewItemModal(true)}
+          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Cadastrar Item / Ração</span>
+        </button>
       </div>
 
       {/* Regra de Ouro Explicativa Banner */}
@@ -489,6 +547,149 @@ export default function EstoquePage() {
                   className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs"
                 >
                   Recalcular Previsão
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Cadastro de Novo Item / Ração */}
+      {showNewItemModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95">
+            <h3 className="text-lg font-black text-slate-900 mb-1">
+              Cadastrar Item no Estoque
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Adicione rações, medicamentos, suplementos ou petiscos com controle de duração e compra.
+            </p>
+
+            <form onSubmit={handleCreateItem} className="space-y-3.5">
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">
+                  Nome do Produto / Ração
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Ração Golden Formula Frango 15kg"
+                  value={newItemName}
+                  onChange={(e) => setNewItemName(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Categoria
+                  </label>
+                  <select
+                    value={newItemCategory}
+                    onChange={(e) => setNewItemCategory(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  >
+                    <option value="racao">Ração</option>
+                    <option value="petisco">Petisco</option>
+                    <option value="medicamento">Medicamento</option>
+                    <option value="higiene">Higiene</option>
+                    <option value="outro">Outro</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Unidade de Medida
+                  </label>
+                  <select
+                    value={newItemUnit}
+                    onChange={(e) => setNewItemUnit(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  >
+                    <option value="g">Gramas (g)</option>
+                    <option value="kg">Quilos (kg)</option>
+                    <option value="unidades">Unidades</option>
+                    <option value="comprimidos">Comprimidos</option>
+                    <option value="ml">Mililitros (ml)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Estoque Atual ({newItemUnit})
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="Ex: 15000"
+                    value={newItemCurrentQty}
+                    onChange={(e) => setNewItemCurrentQty(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Consumo Diário ({newItemUnit}/dia)
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="Ex: 350"
+                    value={newItemDailyConsumption}
+                    onChange={(e) => setNewItemDailyConsumption(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">
+                  Antecedência para Compra (Lead Time em dias)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  placeholder="Ex: 7"
+                  value={newItemLeadTime}
+                  onChange={(e) => setNewItemLeadTime(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">
+                  Observações (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: sabor frango & arroz, embalagem fechada"
+                  value={newItemNotes}
+                  onChange={(e) => setNewItemNotes(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNewItemModal(false)}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs"
+                >
+                  {isSubmitting ? "Cadastrando..." : "Cadastrar no Estoque"}
                 </button>
               </div>
             </form>

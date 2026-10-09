@@ -1,34 +1,34 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { format } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../convex/_generated/api";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
   try {
-    let targetPetId: string | undefined = petId || undefined;
+    let targetPetId = petId;
     if (!targetPetId) {
-      const firstPet = await prisma.pet.findFirst();
-      targetPetId = firstPet?.id;
+      const allPets = await convex.query(api.pets.listAll);
+      targetPetId = allPets[0]?._id;
     }
 
     if (!targetPetId) {
       return NextResponse.json({ items: [] });
     }
 
-    const items = await prisma.shoppingListItem.findMany({
-      where: { petId: targetPetId },
-      include: {
-        inventoryItem: true,
-        purchasedBy: true,
-      },
-      orderBy: { createdAt: "desc" },
+    const items = await convex.query(api.inventory.listShoppingList, {
+      petId: targetPetId as any,
     });
 
-    return NextResponse.json({ items });
+    return NextResponse.json({ items: items || [] });
   } catch (error: any) {
+    console.error("Shopping list GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -45,35 +45,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const item = await prisma.shoppingListItem.create({
-      data: {
-        petId,
-        inventoryItemId: inventoryItemId || null,
-        customName: customName || null,
-        quantity: quantity ? Number(quantity) : null,
-        unit: unit || null,
-        isPurchased: false,
-      },
-      include: {
-        inventoryItem: true,
-      },
+    const itemId = await convex.mutation(api.inventory.addShoppingItem, {
+      petId: petId as any,
+      inventoryItemId: inventoryItemId ? (inventoryItemId as any) : undefined,
+      customName: customName || undefined,
+      quantity: quantity ? Number(quantity) : undefined,
+      unit: unit || undefined,
+      userId: userId ? (userId as any) : undefined,
     });
 
-    if (userId) {
-      const itemName = customName || item.inventoryItem?.name || "Item";
-      await prisma.activityLog.create({
-        data: {
-          petId,
-          userId,
-          action: `adicionou "${itemName}" à lista de compras`,
-          entityType: "shopping_list",
-          entityId: item.id,
-        },
-      });
-    }
-
-    return NextResponse.json({ success: true, item });
+    return NextResponse.json({ success: true, itemId });
   } catch (error: any) {
+    console.error("Shopping list POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -87,50 +70,15 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Dados incompletos" }, { status: 400 });
     }
 
-    const item = await prisma.shoppingListItem.findUnique({
-      where: { id },
-      include: { inventoryItem: true },
+    const updated = await convex.mutation(api.inventory.toggleShoppingItem, {
+      id: id as any,
+      isPurchased: Boolean(isPurchased),
+      userId: userId ? (userId as any) : undefined,
     });
-
-    if (!item) {
-      return NextResponse.json({ error: "Item não encontrado" }, { status: 404 });
-    }
-
-    const updated = await prisma.shoppingListItem.update({
-      where: { id },
-      data: {
-        isPurchased,
-        purchasedAt: isPurchased ? new Date() : null,
-        purchasedByUserId: isPurchased ? userId : null,
-      },
-      include: {
-        purchasedBy: true,
-        inventoryItem: true,
-      },
-    });
-
-    // Registrar no audit log
-    if (userId) {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      const userName = user?.name || "Tutor";
-      const itemName = item.customName || item.inventoryItem?.name || "Item";
-      const dateFormatted = format(new Date(), "dd/MM/yyyy", { locale: ptBR });
-
-      await prisma.activityLog.create({
-        data: {
-          petId: item.petId,
-          userId,
-          action: isPurchased
-            ? `marcou "${itemName}" como comprado em ${dateFormatted}`
-            : `desmarcou "${itemName}" da lista de compras`,
-          entityType: "shopping_list",
-          entityId: item.id,
-        },
-      });
-    }
 
     return NextResponse.json({ success: true, item: updated });
   } catch (error: any) {
+    console.error("Shopping list PATCH error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

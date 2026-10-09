@@ -1,36 +1,33 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../convex/_generated/api";
 import { calculateStockForecast } from "@/lib/stockCalculation";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
   try {
-    let targetPetId: string | undefined = petId || undefined;
+    let targetPetId = petId;
     if (!targetPetId) {
-      const firstPet = await prisma.pet.findFirst();
-      targetPetId = firstPet?.id;
+      const allPets = await convex.query(api.pets.listAll);
+      targetPetId = allPets[0]?._id;
     }
 
     if (!targetPetId) {
       return NextResponse.json({ items: [] });
     }
 
-    const items = await prisma.inventoryItem.findMany({
-      where: { petId: targetPetId },
-      include: {
-        medication: true,
-        transactions: {
-          orderBy: { date: "desc" },
-          take: 5,
-          include: { user: true },
-        },
-      },
-      orderBy: { name: "asc" },
+    const items = await convex.query(api.inventory.listByPet, {
+      petId: targetPetId as any,
     });
 
-    const itemsWithForecast = items.map((item) => {
+    const itemsWithForecast = (items || []).map((item: any) => {
       const forecast = calculateStockForecast({
         currentQuantity: item.currentQuantity,
         dailyConsumption: item.dailyConsumption,
@@ -40,12 +37,14 @@ export async function GET(request: Request) {
 
       return {
         ...item,
+        id: item._id,
         forecast,
       };
     });
 
     return NextResponse.json({ items: itemsWithForecast });
   } catch (error: any) {
+    console.error("Inventory GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -62,7 +61,43 @@ export async function POST(request: Request) {
       notes,
       userId,
       petId,
+      // Se for criação de novo item de estoque
+      isNewItem,
+      name,
+      category,
+      unit,
+      currentQuantity,
+      dailyConsumption,
+      purchaseLeadTimeDays,
     } = body;
+
+    // Se for criação de um novo item de estoque (ração, petisco, medicamento etc)
+    if (isNewItem || (!inventoryItemId && name && petId)) {
+      if (!name || !unit || dailyConsumption === undefined) {
+        return NextResponse.json(
+          { error: "Nome, unidade e consumo diário são obrigatórios para novo item." },
+          { status: 400 }
+        );
+      }
+
+      const newItemId = await convex.mutation(api.inventory.createItem, {
+        petId: petId as any,
+        name: name.trim(),
+        category: category || "racao",
+        unit: unit.trim(),
+        currentQuantity: Number(currentQuantity || 0),
+        dailyConsumption: Number(dailyConsumption || 0),
+        purchaseLeadTimeDays: Number(purchaseLeadTimeDays || 7),
+        notes: notes || undefined,
+        userId: userId ? (userId as any) : undefined,
+      });
+
+      return NextResponse.json({
+        success: true,
+        itemId: newItemId,
+        message: `Item ${name} cadastrado no estoque com sucesso!`,
+      });
+    }
 
     if (!inventoryItemId || !type || quantity === undefined) {
       return NextResponse.json(
@@ -71,97 +106,39 @@ export async function POST(request: Request) {
       );
     }
 
-    const item = await prisma.inventoryItem.findUnique({
-      where: { id: inventoryItemId },
+    const result = await convex.mutation(api.inventory.recordTransaction, {
+      inventoryItemId: inventoryItemId as any,
+      type,
+      quantity: Number(quantity),
+      unitPrice: unitPrice ? Number(unitPrice) : undefined,
+      totalPrice: totalPrice ? Number(totalPrice) : undefined,
+      notes: notes || undefined,
+      userId: userId ? (userId as any) : undefined,
     });
 
-    if (!item) {
-      return NextResponse.json(
-        { error: "Item de estoque não encontrado" },
-        { status: 404 }
-      );
-    }
-
-    // Calcula nova quantidade
-    let delta = Number(quantity);
-    let newQuantity = item.currentQuantity;
-
-    if (type === "purchase") {
-      newQuantity += Math.abs(delta);
-    } else if (type === "consumption" || type === "loss" || type === "expiration") {
-      newQuantity = Math.max(0, newQuantity - Math.abs(delta));
-      delta = -Math.abs(delta);
-    } else if (type === "adjustment") {
-      newQuantity = Math.max(0, delta); // ajuste direto para o valor informado
-      delta = newQuantity - item.currentQuantity;
-    }
-
-    // 1. Criar transação de estoque
-    const transaction = await prisma.inventoryTransaction.create({
-      data: {
-        inventoryItemId,
-        type,
-        quantity: delta,
-        unitPrice: unitPrice ? Number(unitPrice) : null,
-        totalPrice: totalPrice ? Number(totalPrice) : null,
-        date: new Date(),
-        userId: userId || null,
-        notes: notes || null,
-      },
-    });
-
-    // 2. Recalcular status com a nova quantidade
-    const forecast = calculateStockForecast({
-      currentQuantity: newQuantity,
-      dailyConsumption: item.dailyConsumption,
-      unit: item.unit,
-      purchaseLeadTimeDays: item.purchaseLeadTimeDays,
-    });
-
-    // 3. Atualizar item
-    const updatedItem = await prisma.inventoryItem.update({
-      where: { id: inventoryItemId },
-      data: {
-        currentQuantity: newQuantity,
-        status: forecast.status,
-        estimatedEndDate: forecast.estimatedEndDate,
-      },
-    });
-
-    // 4. Registrar no audit trail (ActivityLog)
-    if (userId) {
-      let actionText = `atualizou estoque de ${item.name} para ${newQuantity} ${item.unit}`;
-      if (type === "consumption") {
-        actionText = `registrou consumo de ${Math.abs(delta)} ${item.unit} de ${item.name}`;
-      } else if (type === "purchase") {
-        actionText = `registrou entrada de ${Math.abs(delta)} ${item.unit} de ${item.name}`;
-      }
-
-      await prisma.activityLog.create({
-        data: {
-          petId: item.petId,
-          userId,
-          action: actionText,
-          entityType: "inventory",
-          entityId: item.id,
-          metadata: JSON.stringify({
-            oldQuantity: item.currentQuantity,
-            newQuantity,
-            type,
-          }),
-        },
-      });
-    }
+    const updatedItem = result.item;
+    const forecast = updatedItem
+      ? calculateStockForecast({
+          currentQuantity: updatedItem.currentQuantity,
+          dailyConsumption: updatedItem.dailyConsumption,
+          unit: updatedItem.unit,
+          purchaseLeadTimeDays: updatedItem.purchaseLeadTimeDays,
+        })
+      : null;
 
     return NextResponse.json({
       success: true,
-      transaction,
-      item: {
-        ...updatedItem,
-        forecast,
-      },
+      transactionId: result.transactionId,
+      item: updatedItem
+        ? {
+            ...updatedItem,
+            id: updatedItem._id,
+            forecast,
+          }
+        : null,
     });
   } catch (error: any) {
+    console.error("Inventory POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -178,58 +155,48 @@ export async function PUT(request: Request) {
       userId,
     } = body;
 
-    const existing = await prisma.inventoryItem.findUnique({
-      where: { id },
-    });
-
-    if (!existing) {
-      return NextResponse.json({ error: "Item não encontrado" }, { status: 404 });
+    if (!id) {
+      return NextResponse.json(
+        { error: "ID do item de estoque é obrigatório." },
+        { status: 400 }
+      );
     }
 
-    const newDaily = dailyConsumption !== undefined ? Number(dailyConsumption) : existing.dailyConsumption;
-    const newLead = purchaseLeadTimeDays !== undefined ? Number(purchaseLeadTimeDays) : existing.purchaseLeadTimeDays;
-    const newQty = currentQuantity !== undefined ? Number(currentQuantity) : existing.currentQuantity;
-    const newUnit = unit || existing.unit;
-
-    const forecast = calculateStockForecast({
-      currentQuantity: newQty,
-      dailyConsumption: newDaily,
-      unit: newUnit,
-      purchaseLeadTimeDays: newLead,
+    const updated = await convex.mutation(api.inventory.updateParams, {
+      id: id as any,
+      dailyConsumption:
+        dailyConsumption !== undefined ? Number(dailyConsumption) : undefined,
+      purchaseLeadTimeDays:
+        purchaseLeadTimeDays !== undefined
+          ? Number(purchaseLeadTimeDays)
+          : undefined,
+      currentQuantity:
+        currentQuantity !== undefined ? Number(currentQuantity) : undefined,
+      unit: unit || undefined,
+      userId: userId ? (userId as any) : undefined,
     });
 
-    const updated = await prisma.inventoryItem.update({
-      where: { id },
-      data: {
-        dailyConsumption: newDaily,
-        purchaseLeadTimeDays: newLead,
-        currentQuantity: newQty,
-        unit: newUnit,
-        status: forecast.status,
-        estimatedEndDate: forecast.estimatedEndDate,
-      },
-    });
-
-    if (userId) {
-      await prisma.activityLog.create({
-        data: {
-          petId: existing.petId,
-          userId,
-          action: `alterou parâmetros de consumo diário (${newDaily} ${newUnit}/dia) e antecedência (${newLead} dias) de ${existing.name}`,
-          entityType: "inventory",
-          entityId: id,
-        },
-      });
-    }
+    const forecast = updated
+      ? calculateStockForecast({
+          currentQuantity: updated.currentQuantity,
+          dailyConsumption: updated.dailyConsumption,
+          unit: updated.unit,
+          purchaseLeadTimeDays: updated.purchaseLeadTimeDays,
+        })
+      : null;
 
     return NextResponse.json({
       success: true,
-      item: {
-        ...updated,
-        forecast,
-      },
+      item: updated
+        ? {
+            ...updated,
+            id: updated._id,
+            forecast,
+          }
+        : null,
     });
   } catch (error: any) {
+    console.error("Inventory PUT error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

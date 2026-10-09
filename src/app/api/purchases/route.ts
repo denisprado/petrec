@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { calculateStockForecast } from "@/lib/stockCalculation";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../convex/_generated/api";
 import { getRolePermissions } from "@/lib/permissions";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,47 +14,46 @@ export async function GET(request: Request) {
   const userId = searchParams.get("userId");
 
   try {
-    let targetPetId: string | undefined = petId || undefined;
+    let targetPetId = petId;
     if (!targetPetId) {
-      const firstPet = await prisma.pet.findFirst();
-      targetPetId = firstPet?.id;
+      const allPets = await convex.query(api.pets.listAll);
+      targetPetId = allPets[0]?._id;
     }
 
     if (!targetPetId) {
       return NextResponse.json({ purchases: [], financialsBlocked: false });
     }
 
+    // RBAC check
     if (userId) {
-      const membership = await prisma.petMember.findUnique({
-        where: { petId_userId: { petId: targetPetId, userId } },
+      const pet = await convex.query(api.pets.getById, {
+        petId: targetPetId as any,
       });
-      if (membership) {
-        const perms = getRolePermissions(membership.role);
-        if (!perms.canViewFinancials) {
-          return NextResponse.json({
-            purchases: [],
-            financialsBlocked: true,
-            message: "Dados financeiros e valores de compra são restritos aos tutores.",
-          });
+      if (pet && (pet as any).members) {
+        const membership = (pet as any).members.find(
+          (m: any) => m.userId === userId
+        );
+        if (membership) {
+          const perms = getRolePermissions(membership.role);
+          if (!perms.canViewFinancials) {
+            return NextResponse.json({
+              purchases: [],
+              financialsBlocked: true,
+              message:
+                "Dados financeiros e valores de compra são restritos aos tutores.",
+            });
+          }
         }
       }
     }
 
-    const purchases = await prisma.purchase.findMany({
-      where: { petId: targetPetId },
-      include: {
-        user: true,
-        items: {
-          include: {
-            inventoryItem: true,
-          },
-        },
-      },
-      orderBy: { date: "desc" },
+    const purchases = await convex.query(api.inventory.listPurchases, {
+      petId: targetPetId as any,
     });
 
     return NextResponse.json({ purchases, financialsBlocked: false });
   } catch (error: any) {
+    console.error("Purchases GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -66,120 +70,57 @@ export async function POST(request: Request) {
       );
     }
 
-    const membership = await prisma.petMember.findUnique({
-      where: { petId_userId: { petId, userId } },
-    });
-    if (membership) {
-      const perms = getRolePermissions(membership.role);
-      if (!perms.canRegisterPurchases) {
-        return NextResponse.json(
-          { error: "Seu papel não possui permissão para registrar compras financeiras." },
-          { status: 403 }
-        );
+    // Validação de permissões
+    const pet = await convex.query(api.pets.getById, { petId: petId as any });
+    if (pet && (pet as any).members) {
+      const membership = (pet as any).members.find(
+        (m: any) => m.userId === userId
+      );
+      if (membership) {
+        const perms = getRolePermissions(membership.role);
+        if (!perms.canRegisterPurchases) {
+          return NextResponse.json(
+            {
+              error:
+                "Seu papel não possui permissão para registrar compras financeiras.",
+            },
+            { status: 403 }
+          );
+        }
       }
     }
 
     let total = 0;
-    for (const it of items) {
-      total += Number(it.quantity) * Number(it.unitPrice || 0);
-    }
+    const formattedItems = [];
 
-    // 1. Criar Compra
-    const purchase = await prisma.purchase.create({
-      data: {
-        petId,
-        userId,
-        supplier: supplier || "Loja Pet",
-        total,
-        notes,
-        date: new Date(),
-      },
-    });
-
-    // 2. Iterar itens comprados, atualizar estoque e recalcular previsão
     for (const it of items) {
-      const invItem = await prisma.inventoryItem.findUnique({
-        where: { id: it.inventoryItemId },
+      const qty = Number(it.quantity);
+      const unitPrice = Number(it.unitPrice || 0);
+      total += qty * unitPrice;
+
+      formattedItems.push({
+        inventoryItemId: it.inventoryItemId as any,
+        quantity: qty,
+        unitPrice,
       });
-
-      if (invItem) {
-        const itemQty = Number(it.quantity);
-        const unitPrice = Number(it.unitPrice || 0);
-        const itemTotal = itemQty * unitPrice;
-
-        // Criar item da compra
-        await prisma.purchaseItem.create({
-          data: {
-            purchaseId: purchase.id,
-            inventoryItemId: invItem.id,
-            quantity: itemQty,
-            unitPrice,
-            total: itemTotal,
-          },
-        });
-
-        // Criar transação de estoque
-        await prisma.inventoryTransaction.create({
-          data: {
-            inventoryItemId: invItem.id,
-            type: "purchase",
-            quantity: itemQty,
-            unitPrice,
-            totalPrice: itemTotal,
-            date: new Date(),
-            userId,
-            notes: `Compra realizada via fornecedor: ${supplier || "Loja"}`,
-          },
-        });
-
-        // Atualizar estoque e recalcular previsão
-        const newQty = invItem.currentQuantity + itemQty;
-        const forecast = calculateStockForecast({
-          currentQuantity: newQty,
-          dailyConsumption: invItem.dailyConsumption,
-          unit: invItem.unit,
-          purchaseLeadTimeDays: invItem.purchaseLeadTimeDays,
-        });
-
-        await prisma.inventoryItem.update({
-          where: { id: invItem.id },
-          data: {
-            currentQuantity: newQty,
-            status: forecast.status,
-            estimatedEndDate: forecast.estimatedEndDate,
-          },
-        });
-
-        // Se este item estava na lista de compras como pendente, marca como comprado!
-        await prisma.shoppingListItem.updateMany({
-          where: {
-            petId,
-            inventoryItemId: invItem.id,
-            isPurchased: false,
-          },
-          data: {
-            isPurchased: true,
-            purchasedAt: new Date(),
-            purchasedByUserId: userId,
-          },
-        });
-      }
     }
 
-    // 3. Registrar no audit trail (ActivityLog)
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    await prisma.activityLog.create({
-      data: {
-        petId,
-        userId,
-        action: `registrou compra de R$ ${total.toFixed(2).replace(".", ",")} (${supplier || "Loja"})`,
-        entityType: "purchase",
-        entityId: purchase.id,
-      },
+    const purchaseId = await convex.mutation(api.inventory.recordPurchaseFull, {
+      petId: petId as any,
+      userId: userId as any,
+      supplier: supplier || "Loja Pet",
+      total,
+      notes: notes || undefined,
+      items: formattedItems,
     });
 
-    return NextResponse.json({ success: true, purchase });
+    return NextResponse.json({
+      success: true,
+      purchaseId,
+      message: "Compra registrada com sucesso no Convex!",
+    });
   } catch (error: any) {
+    console.error("Purchases POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
