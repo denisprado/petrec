@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../../convex/_generated/api";
 import { addMinutes } from "date-fns";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   try {
@@ -11,36 +17,30 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "userId é obrigatório" }, { status: 400 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        pairingTokens: {
-          where: { expiresAt: { gt: new Date() } },
-          orderBy: { createdAt: "desc" },
-          take: 1,
-        },
-      },
+    const user = await convex.query(api.users.getById, {
+      userId: userId as any,
     });
 
     if (!user) {
       return NextResponse.json({ error: "Usuário não encontrado" }, { status: 404 });
     }
 
-    let token = user.pairingTokens[0]?.token;
-    let expiresAt = user.pairingTokens[0]?.expiresAt;
+    const existingTokenDoc = await convex.query(api.users.getPairingToken, {
+      userId: userId as any,
+    });
 
-    // Se não houver token válido existente, gera um novo
+    let token = existingTokenDoc?.token;
+    let expiresAt = existingTokenDoc?.expiresAt;
+
     if (!token) {
       const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
       token = `LINK_${randomCode}`;
-      expiresAt = addMinutes(new Date(), 30);
+      expiresAt = addMinutes(new Date(), 30).getTime();
 
-      await prisma.whatsappPairingToken.create({
-        data: {
-          userId,
-          token,
-          expiresAt,
-        },
+      await convex.mutation(api.users.createPairingToken, {
+        userId: userId as any,
+        token,
+        expiresAt,
       });
     }
 
@@ -56,6 +56,7 @@ export async function GET(request: Request) {
       isVerified: !!user.whatsappVerifiedAt,
     });
   } catch (error: any) {
+    console.error("WhatsApp pairing GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -69,30 +70,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "userId é obrigatório" }, { status: 400 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
+    const user = await convex.query(api.users.getById, {
+      userId: userId as any,
     });
 
     if (!user) {
       return NextResponse.json({ error: "Usuário não encontrado" }, { status: 404 });
     }
 
-    // Limpar tokens antigos do usuário
-    await prisma.whatsappPairingToken.deleteMany({
-      where: { userId },
-    });
-
-    // Gerar token efêmero de 6 caracteres alfanuméricos legíveis
     const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const token = `LINK_${randomCode}`;
-    const expiresAt = addMinutes(new Date(), 30);
+    const expiresAt = addMinutes(new Date(), 30).getTime();
 
-    await prisma.whatsappPairingToken.create({
-      data: {
-        userId,
-        token,
-        expiresAt,
-      },
+    await convex.mutation(api.users.createPairingToken, {
+      userId: userId as any,
+      token,
+      expiresAt,
     });
 
     const botNumber = process.env.WHATSAPP_BOT_NUMBER || "5519999999999";
@@ -107,6 +100,7 @@ export async function POST(request: Request) {
       isVerified: !!user.whatsappVerifiedAt,
     });
   } catch (error: any) {
+    console.error("WhatsApp pairing POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -120,24 +114,16 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "userId é obrigatório" }, { status: 400 });
     }
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        whatsappPhoneNumber: null,
-        whatsappVerifiedAt: null,
-      },
+    await convex.mutation(api.users.disconnectWhatsApp, {
+      userId: userId as any,
     });
 
-    await prisma.whatsappSession.deleteMany({
-      where: { userId },
+    return NextResponse.json({
+      success: true,
+      message: "WhatsApp desconectado com sucesso.",
     });
-
-    await prisma.whatsappPairingToken.deleteMany({
-      where: { userId },
-    });
-
-    return NextResponse.json({ success: true, message: "WhatsApp desconectado com sucesso." });
   } catch (error: any) {
+    console.error("WhatsApp pairing DELETE error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

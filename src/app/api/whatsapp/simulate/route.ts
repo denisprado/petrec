@@ -1,52 +1,238 @@
 import { NextResponse } from "next/server";
-import { processIncomingWhatsAppMessage } from "@/lib/whatsappBot";
-import { prisma } from "@/lib/prisma";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../../convex/_generated/api";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { fromPhone, messageText, userId } = body;
 
-    let phone = fromPhone;
+    let phone = fromPhone || "+5519988887777";
+    const text = (messageText || "").trim();
 
-    // Se passou userId e não passou phone, busca o telefone cadastrado ou usa um mock
-    if (userId && !phone) {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      phone = user?.whatsappPhoneNumber || "+5519988887777";
-    }
-
-    if (!phone || !messageText) {
+    if (!text) {
       return NextResponse.json(
-        { error: "Telefone e texto da mensagem são obrigatórios" },
+        { error: "Texto da mensagem é obrigatório" },
         { status: 400 }
       );
     }
 
-    const startTime = Date.now();
-    const result = await processIncomingWhatsAppMessage({
-      fromPhone: phone,
-      messageText,
-    });
-    const durationMs = Date.now() - startTime;
+    const cleanPhone = phone.startsWith("+") ? phone : `+${phone.replace(/[^\d]/g, "")}`;
+    const upper = text.toUpperCase();
 
-    // Buscar sessão atualizada
-    const user = await prisma.user.findFirst({
-      where: { whatsappPhoneNumber: phone },
-      include: { whatsappSession: true },
+    // 1. Comando de pareamento
+    if (upper.startsWith("CONECTAR_") || upper.startsWith("LINK_") || upper.startsWith("CONECTAR ")) {
+      const token = upper.startsWith("CONECTAR ") ? upper.replace("CONECTAR ", "").trim() : upper;
+      const pairResult = await convex.mutation(api.whatsapp.pairByToken, {
+        phone: cleanPhone,
+        token,
+      });
+
+      if (pairResult.success && pairResult.user) {
+        return NextResponse.json({
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: pairResult.user.name,
+          replyText: `🎉 *Conexão realizada com sucesso!*\n\nOlá *${pairResult.user.name}*, seu WhatsApp foi vinculado ao *PetRec*.\nEnvie *menu* ou *0* a qualquer momento para ver as opções disponíveis!`,
+          actionTaken: "whatsapp_paired",
+          currentState: "IDLE",
+        });
+      } else {
+        return NextResponse.json({
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: false,
+          replyText: "❌ Este código de conexão é inválido ou já expirou. Gere um novo código no app.",
+          currentState: "IDLE",
+        });
+      }
+    }
+
+    // 2. Buscar usuário pelo telefone no Convex
+    let context = await convex.query(api.whatsapp.getContextByPhone, {
+      phone: cleanPhone,
     });
 
+    if (!context?.user && userId) {
+      const userById = await convex.query(api.users.getById, { userId: userId as any });
+      if (userById?.whatsappPhoneNumber) {
+        context = await convex.query(api.whatsapp.getContextByPhone, {
+          phone: userById.whatsappPhoneNumber,
+        });
+      }
+    }
+
+    if (!context?.user) {
+      return NextResponse.json({
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: false,
+        replyText:
+          "👋 Olá! Não identificamos seu número cadastrado no *PetRec*.\n\n" +
+          "Para vincular sua conta:\n" +
+          "1. Acesse o PetRec Web\n" +
+          "2. Vá na aba *WhatsApp*\n" +
+          "3. Clique em *'Conectar com 1 Clique'* ou envie o código gerado aqui!",
+        currentState: "IDLE",
+      });
+    }
+
+    const user = context.user;
+    const pets = context.pets || [];
+    const currentPet = pets[0];
+
+    if (!currentPet) {
+      return NextResponse.json({
+        success: true,
+        userFound: true,
+        userName: user.name,
+        replyText: "Você ainda não possui nenhum pet cadastrado. Cadastre seu pet no aplicativo!",
+        currentState: "IDLE",
+      });
+    }
+
+    const lower = text.toLowerCase();
+
+    // COMANDO 0 / Menu
+    if (lower === "0" || lower === "menu" || lower === "ajuda" || lower === "oi" || lower === "olá") {
+      return NextResponse.json({
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText:
+          `🐾 *Menu PetRec — ${currentPet.name}*\n\n` +
+          `1️⃣ *Hoje* — Tarefas e remédios agendados\n` +
+          `2️⃣ *Estoque* — Nível de ração e previsão de término\n` +
+          `3️⃣ *Remédio* — Confirmar administração de dose\n` +
+          `4️⃣ *Refeição* — Registrar ração dada\n` +
+          `5️⃣ *Vacinas* — Próximos reforços\n` +
+          `6️⃣ *Compras* — Registrar compra de produtos\n` +
+          `7️⃣ *Peso* — Consultar ou registrar peso\n` +
+          `8️⃣ *Prontuário* — Histórico clínico e consultas\n\n` +
+          `💡 _Responda com o número desejado ou digite comandos como "alimentei 200g" ou "pesei 18kg"._`,
+        currentState: "IDLE",
+      });
+    }
+
+    // COMANDO 1 / Hoje
+    if (lower === "1" || lower.includes("hoje") || lower.includes("agenda")) {
+      const todayAdms = await convex.query(api.medications.getAdministrationsToday, {
+        petId: currentPet._id,
+      });
+
+      let reply = `📅 *Agenda de Hoje — ${currentPet.name}:*\n\n`;
+      if (!todayAdms || todayAdms.length === 0) {
+        reply += "Nenhum medicamento pendente para hoje! Tudo em ordem. ✨";
+      } else {
+        for (const a of todayAdms) {
+          const statusIcon = a.status === "administered" ? "✅" : "⏰";
+          reply += `${statusIcon} *${a.medication?.name || "Medicamento"}* (${a.quantity} dose)\n   Status: ${a.status}\n`;
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        replyText: reply,
+        currentState: "IDLE",
+      });
+    }
+
+    // COMANDO 2 / Estoque
+    if (lower === "2" || lower === "estoque" || lower.includes("ração") || lower.includes("racao")) {
+      const inv = await convex.query(api.inventory.listByPet, { petId: currentPet._id });
+      let reply = `📦 *Estoque & Previsão — ${currentPet.name}:*\n\n`;
+
+      if (!inv || inv.length === 0) {
+        reply += "Nenhum item cadastrado no estoque deste pet.";
+      } else {
+        for (const item of inv) {
+          reply += `• *${item.name}*: ${item.currentQuantity} ${item.unit} (Consumo: ${item.dailyConsumption} ${item.unit}/dia) — Status: *${item.status}*\n`;
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        replyText: reply,
+        currentState: "IDLE",
+      });
+    }
+
+    // COMANDO 4 / Refeição
+    if (lower === "4" || lower.includes("alimentei") || lower.includes("comida") || lower.includes("refeição")) {
+      const inv = await convex.query(api.inventory.listByPet, { petId: currentPet._id });
+      const racao = inv.find((i: any) => i.category === "racao") || inv[0];
+
+      if (racao) {
+        const dose = racao.dailyConsumption ? Math.round(racao.dailyConsumption / 2) : 200;
+        await convex.mutation(api.inventory.recordConsumption, {
+          inventoryItemId: racao._id,
+          quantity: dose,
+          userId: user._id,
+          notes: "Refeição registrada via WhatsApp",
+        });
+
+        return NextResponse.json({
+          success: true,
+          replyText: `🥣 *Refeição registrada!*\n\nVocê registrou *${dose} ${racao.unit}* de *${racao.name}* para *${currentPet.name}*.\nEstoque atualizado automaticamente no PetRec!`,
+          actionTaken: "consumption_recorded",
+          currentState: "IDLE",
+        });
+      }
+    }
+
+    // COMANDO 7 / Peso
+    if (lower === "7" || lower.includes("peso") || lower.includes("pesei")) {
+      const match = text.match(/(\d+([.,]\d+)?)\s*(kg)?/i);
+      if (match) {
+        const val = parseFloat(match[1].replace(",", "."));
+        if (!isNaN(val) && val > 0 && val < 200) {
+          await convex.mutation(api.health.recordWeight, {
+            petId: currentPet._id,
+            userId: user._id,
+            weight: val,
+            notes: "Registrado via WhatsApp",
+          });
+
+          return NextResponse.json({
+            success: true,
+            replyText: `⚖️ *Pesagem registrada!*\n\n*${currentPet.name}* atualizado para *${val} kg* no prontuário!`,
+            actionTaken: "weight_recorded",
+            currentState: "IDLE",
+          });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        replyText: `⚖️ *Peso atual de ${currentPet.name}:* ${currentPet.weight ? `${currentPet.weight} kg` : "Não informado"}.\n\nPara atualizar, envie por exemplo: *pesei 18.5kg*.`,
+        currentState: "IDLE",
+      });
+    }
+
+    // Fallback amigável
     return NextResponse.json({
       success: true,
-      senderPhone: phone,
-      userFound: !!user,
-      userName: user?.name,
-      replyText: result.replyText,
-      actionTaken: result.actionTaken,
-      currentState: user?.whatsappSession?.state || "IDLE",
-      durationMs,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText:
+        `🐾 Mensagem recebida para *${currentPet.name}*!\n\n` +
+        `Envie *0* para ver o menu de opções ou digite:\n` +
+        `• *1* — Tarefas de Hoje\n` +
+        `• *2* — Estoque de Ração\n` +
+        `• *4* — Registrar Refeição\n` +
+        `• *7* — Peso`,
+      currentState: "IDLE",
     });
   } catch (error: any) {
-    console.error("Erro no simulador de WhatsApp:", error);
+    console.error("WhatsApp simulate error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

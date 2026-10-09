@@ -1,15 +1,21 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../convex/_generated/api";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
   try {
-    let targetPetId: string | undefined = petId || undefined;
+    let targetPetId = petId;
     if (!targetPetId) {
-      const firstPet = await prisma.pet.findFirst();
-      targetPetId = firstPet?.id;
+      const allPets = await convex.query(api.pets.listAll);
+      targetPetId = allPets[0]?._id;
     }
 
     if (!targetPetId) {
@@ -21,34 +27,18 @@ export async function GET(request: Request) {
       });
     }
 
-    const [vaccines, weightHistory, appointments, healthEvents] = await Promise.all([
-      prisma.vaccination.findMany({
-        where: { petId: targetPetId },
-        orderBy: { applicationDate: "desc" },
-      }),
-      prisma.weightRecord.findMany({
-        where: { petId: targetPetId },
-        orderBy: { date: "asc" },
-        include: { user: true },
-      }),
-      prisma.appointment.findMany({
-        where: { petId: targetPetId },
-        orderBy: { date: "asc" },
-      }),
-      prisma.healthEvent.findMany({
-        where: { petId: targetPetId },
-        orderBy: { date: "desc" },
-        include: { user: true },
-      }),
-    ]);
+    const health = await convex.query(api.health.getPetHealth, {
+      petId: targetPetId as any,
+    });
 
     return NextResponse.json({
-      vaccines,
-      weightHistory,
-      appointments,
-      healthEvents,
+      vaccines: health.vaccines || [],
+      weightHistory: health.weights || [],
+      appointments: health.appointments || [],
+      healthEvents: health.healthEvents || [],
     });
   } catch (error: any) {
+    console.error("Saude GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -63,102 +53,55 @@ export async function POST(request: Request) {
     }
 
     if (type === "weight") {
-      const record = await prisma.weightRecord.create({
-        data: {
-          petId,
-          weight: Number(data.weight),
-          date: data.date ? new Date(data.date) : new Date(),
-          userId: userId || null,
-          notes: data.notes || null,
-        },
+      const recordId = await convex.mutation(api.health.recordWeight, {
+        petId: petId as any,
+        userId: userId ? (userId as any) : undefined,
+        weight: Number(data.weight),
+        notes: data.notes || undefined,
+        date: data.date || undefined,
       });
 
-      // Atualiza peso atual do pet
-      await prisma.pet.update({
-        where: { id: petId },
-        data: { weight: Number(data.weight) },
-      });
-
-      if (userId) {
-        await prisma.activityLog.create({
-          data: {
-            petId,
-            userId,
-            action: `registrou novo peso de ${data.weight} kg`,
-            entityType: "health",
-            entityId: record.id,
-          },
-        });
-      }
-
-      return NextResponse.json({ success: true, record });
+      return NextResponse.json({ success: true, recordId });
     }
 
     if (type === "appointment") {
-      const appt = await prisma.appointment.create({
-        data: {
-          petId,
-          type: data.type || "consulta",
-          title: data.title,
-          date: new Date(data.date),
-          time: data.time || "10:00",
-          location: data.location || null,
-          veterinarian: data.veterinarian || null,
-          notes: data.notes || null,
-          createdBy: userId || null,
-        },
+      const apptId = await convex.mutation(api.health.recordAppointment, {
+        petId: petId as any,
+        userId: userId ? (userId as any) : undefined,
+        title: data.title,
+        type: data.type || "consulta",
+        date: data.date,
+        time: data.time || "10:00",
+        location: data.location || undefined,
+        veterinarian: data.veterinarian || undefined,
+        notes: data.notes || undefined,
       });
 
-      if (userId) {
-        await prisma.activityLog.create({
-          data: {
-            petId,
-            userId,
-            action: `agendou compromisso: "${data.title}"`,
-            entityType: "appointment",
-            entityId: appt.id,
-          },
-        });
-      }
-
-      return NextResponse.json({ success: true, appointment: appt });
+      return NextResponse.json({ success: true, appointmentId: apptId });
     }
 
     if (type === "vaccination") {
-      const vacc = await prisma.vaccination.create({
-        data: {
-          petId,
-          name: data.name,
-          type: data.type || "Anual",
-          applicationDate: new Date(data.applicationDate),
-          nextDueDate: data.nextDueDate ? new Date(data.nextDueDate) : null,
-          dose: data.dose || null,
-          lot: data.lot || null,
-          manufacturer: data.manufacturer || null,
-          veterinarian: data.veterinarian || null,
-          clinic: data.clinic || null,
-          notes: data.notes || null,
-          createdBy: userId || null,
-        },
+      const vaccId = await convex.mutation(api.health.recordVaccine, {
+        petId: petId as any,
+        userId: userId ? (userId as any) : undefined,
+        name: data.name,
+        applicationDate: data.applicationDate,
+        nextDueDate: data.nextDueDate || undefined,
+        veterinarian: data.veterinarian || undefined,
+        crmv: data.crmv || undefined,
+        batch: data.batch || undefined,
+        notes: data.notes || undefined,
       });
 
-      if (userId) {
-        await prisma.activityLog.create({
-          data: {
-            petId,
-            userId,
-            action: `registrou aplicação da vacina "${data.name}"`,
-            entityType: "vaccine",
-            entityId: vacc.id,
-          },
-        });
-      }
-
-      return NextResponse.json({ success: true, vaccination: vacc });
+      return NextResponse.json({ success: true, vaccineId: vaccId });
     }
 
-    return NextResponse.json({ error: "Tipo de evento de saúde inválido" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Tipo de evento de saúde inválido" },
+      { status: 400 }
+    );
   } catch (error: any) {
+    console.error("Saude POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

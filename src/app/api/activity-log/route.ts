@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../convex/_generated/api";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -10,15 +16,18 @@ export async function GET(request: Request) {
   }
 
   try {
-    const logs = await prisma.activityLog.findMany({
-      where: { petId },
-      include: { user: true },
-      orderBy: { timestamp: "desc" },
-      take: 30,
+    const logs = await convex.query(api.inventory.listActivityLogs, {
+      petId: petId as any,
     });
 
-    return NextResponse.json({ logs });
+    return NextResponse.json({
+      logs: (logs || []).map((l: any) => ({
+        ...l,
+        id: l._id,
+      })),
+    });
   } catch (error: any) {
+    console.error("Activity log GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

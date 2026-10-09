@@ -37,3 +37,64 @@ export const updateWhatsApp = mutation({
     });
   },
 });
+
+export const getPairingToken = query({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const tokenDoc = await ctx.db
+      .query("whatsappPairingTokens")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .first();
+
+    if (tokenDoc && tokenDoc.expiresAt > now) {
+      return tokenDoc;
+    }
+    return null;
+  },
+});
+
+export const createPairingToken = mutation({
+  args: {
+    userId: v.id("users"),
+    token: v.string(),
+    expiresAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    // Delete existing
+    const existing = await ctx.db
+      .query("whatsappPairingTokens")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const t of existing) await ctx.db.delete(t._id);
+
+    return await ctx.db.insert("whatsappPairingTokens", {
+      userId: args.userId,
+      token: args.token,
+      expiresAt: args.expiresAt,
+    });
+  },
+});
+
+export const disconnectWhatsApp = mutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, {
+      whatsappPhoneNumber: undefined,
+      whatsappVerifiedAt: undefined,
+    });
+
+    const sessions = await ctx.db
+      .query("whatsappSessions")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const s of sessions) await ctx.db.delete(s._id);
+
+    const tokens = await ctx.db
+      .query("whatsappPairingTokens")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const t of tokens) await ctx.db.delete(t._id);
+  },
+});

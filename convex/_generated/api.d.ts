@@ -14,6 +14,7 @@ import type * as medications from "../medications.js";
 import type * as pets from "../pets.js";
 import type * as seed from "../seed.js";
 import type * as users from "../users.js";
+import type * as whatsapp from "../whatsapp.js";
 
 import type {
   ApiFromModules,
@@ -28,6 +29,7 @@ declare const fullApi: ApiFromModules<{
   pets: typeof pets;
   seed: typeof seed;
   users: typeof users;
+  whatsapp: typeof whatsapp;
 }>;
 
 /**

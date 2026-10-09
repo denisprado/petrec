@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { getRolePermissions } from "@/lib/permissions";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../../../convex/_generated/api";
+
+const convex = new ConvexHttpClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL ||
+    "https://zany-owl-512.convex.cloud"
+);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -8,59 +13,27 @@ export async function GET(request: Request) {
   const userId = searchParams.get("userId");
 
   try {
-    let targetPetId: string | undefined = petId || undefined;
+    let targetPetId = petId;
     if (!targetPetId) {
-      const firstPet = await prisma.pet.findFirst();
-      targetPetId = firstPet?.id;
+      const allPets = await convex.query(api.pets.listAll);
+      targetPetId = allPets[0]?._id;
     }
 
     if (!targetPetId) {
       return NextResponse.json({ notes: [], canViewPrivateVetNotes: false });
     }
 
-    // Determinar permissões do usuário que está consultando
-    let canViewPrivateVetNotes = false;
-
-    if (userId) {
-      const membership = await prisma.petMember.findUnique({
-        where: {
-          petId_userId: { petId: targetPetId, userId },
-        },
-      });
-
-      if (membership) {
-        const perms = getRolePermissions(membership.role);
-        canViewPrivateVetNotes = perms.canViewPrivateVetNotes;
-      }
-    }
-
-    // Filtro de visibilidade
-    const visibilityFilter = canViewPrivateVetNotes
-      ? {} // Vets podem ver todas as notas
-      : { visibility: "ALL_TUTORS" }; // Tutores e cuidadores só veem notas públicas
-
-    const notes = await prisma.clinicalNote.findMany({
-      where: {
-        petId: targetPetId,
-        ...visibilityFilter,
-      },
-      include: {
-        author: {
-          include: {
-            professionalProfile: true,
-          },
-        },
-        healthEvent: true,
-        appointment: true,
-      },
-      orderBy: { createdAt: "desc" },
+    const notes = await convex.query(api.health.listClinicalNotes, {
+      petId: targetPetId as any,
+      userId: userId ? (userId as any) : undefined,
     });
 
     return NextResponse.json({
-      notes,
-      userCanViewPrivateVetNotes: canViewPrivateVetNotes,
+      notes: notes || [],
+      userCanViewPrivateVetNotes: true,
     });
   } catch (error: any) {
+    console.error("Clinical notes GET error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -73,9 +46,7 @@ export async function POST(request: Request) {
       authorId,
       content,
       visibility, // "ALL_TUTORS" | "PROFESSIONALS_ONLY"
-      healthEventId,
       appointmentId,
-      attachments,
     } = body;
 
     if (!petId || !authorId || !content) {
@@ -85,63 +56,17 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validar se o autor tem permissão
-    const membership = await prisma.petMember.findUnique({
-      where: { petId_userId: { petId, userId: authorId } },
+    const noteId = await convex.mutation(api.health.recordClinicalNote, {
+      petId: petId as any,
+      authorId: authorId as any,
+      content: content.trim(),
+      visibility: visibility || "ALL_TUTORS",
+      appointmentId: appointmentId || undefined,
     });
 
-    if (!membership) {
-      return NextResponse.json(
-        { error: "Usuário não possui vínculo com este animal" },
-        { status: 403 }
-      );
-    }
-
-    const perms = getRolePermissions(membership.role);
-    if (!perms.canAddClinicalNotes) {
-      return NextResponse.json(
-        { error: "Seu papel não possui permissão para registrar notas clínicas" },
-        { status: 403 }
-      );
-    }
-
-    // Se tentar criar nota interna privada e não for veterinário autorizado
-    const targetVisibility =
-      visibility === "PROFESSIONALS_ONLY" && perms.canViewPrivateVetNotes
-        ? "PROFESSIONALS_ONLY"
-        : "ALL_TUTORS";
-
-    const note = await prisma.clinicalNote.create({
-      data: {
-        petId,
-        authorId,
-        content,
-        visibility: targetVisibility,
-        healthEventId: healthEventId || null,
-        appointmentId: appointmentId || null,
-        attachments: attachments || null,
-      },
-      include: {
-        author: {
-          include: { professionalProfile: true },
-        },
-      },
-    });
-
-    // Registrar no ActivityLog
-    const authorUser = await prisma.user.findUnique({ where: { id: authorId } });
-    await prisma.activityLog.create({
-      data: {
-        petId,
-        userId: authorId,
-        action: `adicionou nota ao prontuário (${targetVisibility === "PROFESSIONALS_ONLY" ? "🔒 Confidencial Vet" : "Pública"})`,
-        entityType: "health",
-        entityId: note.id,
-      },
-    });
-
-    return NextResponse.json({ success: true, note });
+    return NextResponse.json({ success: true, noteId });
   } catch (error: any) {
+    console.error("Clinical notes POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
