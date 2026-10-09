@@ -18,6 +18,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Trash2,
+  Copy,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -361,6 +362,123 @@ export default function WhatsAppPage() {
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Card de Configuração Meta Cloud API (WhatsApp Real) */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Meta Cloud API (WhatsApp Real)</span>
+              </h2>
+              <span className="text-[11px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
+                Configurado ✓
+              </span>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                <div className="flex justify-between items-center text-slate-600">
+                  <span className="font-medium">Número do Bot Meta:</span>
+                  <a
+                    href="https://wa.me/15551874911"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-mono font-bold text-emerald-700 hover:underline flex items-center gap-1"
+                  >
+                    <span>+1 555-187-4911</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <div className="flex justify-between items-center text-slate-600">
+                  <span className="font-medium">Phone Number ID:</span>
+                  <code className="font-mono text-slate-800 bg-slate-200 px-1.5 py-0.5 rounded text-[11px]">
+                    999314983268918
+                  </code>
+                </div>
+              </div>
+
+              {/* Endpoint Webhook */}
+              <div className="space-y-1">
+                <span className="text-[11px] font-bold text-slate-600 block">
+                  Callback URL (Webhook para colar na Meta):
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      typeof window !== "undefined"
+                        ? `${window.location.origin}/api/whatsapp/webhook`
+                        : "https://seu-dominio/api/whatsapp/webhook"
+                    }
+                    className="w-full px-2.5 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700 select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url =
+                        typeof window !== "undefined"
+                          ? `${window.location.origin}/api/whatsapp/webhook`
+                          : "https://seu-dominio/api/whatsapp/webhook";
+                      navigator.clipboard.writeText(url);
+                      setToastMessage("URL do Webhook copiada!");
+                      setTimeout(() => setToastMessage(null), 3000);
+                    }}
+                    className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600 transition shrink-0 cursor-pointer"
+                    title="Copiar URL do Webhook"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Verify Token */}
+              <div className="space-y-1">
+                <span className="text-[11px] font-bold text-slate-600 block">
+                  Verify Token (Token de Verificação):
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    readOnly
+                    value="petrec_webhook_secret_token"
+                    className="w-full px-2.5 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700 select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText("petrec_webhook_secret_token");
+                      setToastMessage("Token de verificação copiado!");
+                      setTimeout(() => setToastMessage(null), 3000);
+                    }}
+                    className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600 transition shrink-0 cursor-pointer"
+                    title="Copiar Verify Token"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Guia de 3 passos para ativar na Meta */}
+            <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-1.5 text-[11px] text-emerald-950">
+              <div className="font-bold text-emerald-900 flex items-center gap-1">
+                <Info className="w-3.5 h-3.5" />
+                <span>Como testar no seu WhatsApp real:</span>
+              </div>
+              <ol className="list-decimal list-inside space-y-1 text-emerald-900">
+                <li>
+                  No Meta Developer Console (WhatsApp &gt; Início da API), adicione seu número à <strong>Lista de permissão (Para)</strong>.
+                </li>
+                <li>
+                  Abra uma conversa com <strong>+1 555-187-4911</strong> no seu celular e envie uma mensagem inicial (ex: <code>oi</code>).
+                </li>
+                <li>
+                  Em <strong>Configuração do Webhook</strong> na Meta, salve a URL e o Verify Token e assine o campo <strong>messages</strong>.
+                </li>
+              </ol>
             </div>
           </div>
 
