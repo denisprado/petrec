@@ -7,7 +7,10 @@ const convex = new ConvexHttpClient(
     "https://zany-owl-512.convex.cloud"
 );
 
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "petrec_webhook_secret_token";
+const VERIFY_TOKEN =
+  process.env.WHATSAPP_VERIFY_TOKEN ||
+  process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN ||
+  "petrec_webhook_secret_token";
 
 // GET: Verificação obrigatória do Webhook da Meta
 export async function GET(request: Request) {

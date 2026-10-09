@@ -88,6 +88,88 @@ export const createItem = mutation({
   },
 });
 
+export const updateItem = mutation({
+  args: {
+    id: v.id("inventoryItems"),
+    name: v.optional(v.string()),
+    category: v.optional(v.string()),
+    unit: v.optional(v.string()),
+    currentQuantity: v.optional(v.number()),
+    dailyConsumption: v.optional(v.number()),
+    purchaseLeadTimeDays: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.id);
+    if (!existing) throw new Error("Item de estoque não encontrado");
+
+    const patch: any = {};
+    if (args.name !== undefined) patch.name = args.name.trim();
+    if (args.category !== undefined) patch.category = args.category;
+    if (args.unit !== undefined) patch.unit = args.unit;
+    if (args.currentQuantity !== undefined) patch.currentQuantity = args.currentQuantity;
+    if (args.dailyConsumption !== undefined) patch.dailyConsumption = args.dailyConsumption;
+    if (args.purchaseLeadTimeDays !== undefined) patch.purchaseLeadTimeDays = args.purchaseLeadTimeDays;
+    if (args.notes !== undefined) patch.notes = args.notes;
+
+    await ctx.db.patch(args.id, patch);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `editou dados de ${patch.name || existing.name}`,
+        entityType: "inventory",
+        entityId: args.id,
+      });
+    }
+
+    return await ctx.db.get(args.id);
+  },
+});
+
+export const deleteItem = mutation({
+  args: {
+    id: v.id("inventoryItems"),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.id);
+    if (!existing) throw new Error("Item de estoque não encontrado");
+
+    // Deletar transações associadas
+    const txs = await ctx.db
+      .query("inventoryTransactions")
+      .withIndex("by_item", (q) => q.eq("inventoryItemId", args.id))
+      .collect();
+    for (const t of txs) await ctx.db.delete(t._id);
+
+    // Deletar da lista de compras se houver
+    const shopItems = await ctx.db
+      .query("shoppingListItems")
+      .withIndex("by_pet", (q) => q.eq("petId", existing.petId))
+      .collect();
+    for (const s of shopItems) {
+      if (s.inventoryItemId === args.id) await ctx.db.delete(s._id);
+    }
+
+    await ctx.db.delete(args.id);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `removeu ${existing.name} do estoque`,
+        entityType: "inventory",
+        entityId: args.id,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
 export const updateParams = mutation({
   args: {
     id: v.id("inventoryItems"),

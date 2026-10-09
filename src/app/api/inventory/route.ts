@@ -148,10 +148,13 @@ export async function PUT(request: Request) {
     const body = await request.json();
     const {
       id,
+      name,
+      category,
       dailyConsumption,
       purchaseLeadTimeDays,
       currentQuantity,
       unit,
+      notes,
       userId,
     } = body;
 
@@ -162,8 +165,10 @@ export async function PUT(request: Request) {
       );
     }
 
-    const updated = await convex.mutation(api.inventory.updateParams, {
+    const updated = await convex.mutation(api.inventory.updateItem, {
       id: id as any,
+      name: name !== undefined ? String(name).trim() : undefined,
+      category: category || undefined,
       dailyConsumption:
         dailyConsumption !== undefined ? Number(dailyConsumption) : undefined,
       purchaseLeadTimeDays:
@@ -173,6 +178,7 @@ export async function PUT(request: Request) {
       currentQuantity:
         currentQuantity !== undefined ? Number(currentQuantity) : undefined,
       unit: unit || undefined,
+      notes: notes !== undefined ? String(notes).trim() : undefined,
       userId: userId ? (userId as any) : undefined,
     });
 
@@ -197,6 +203,28 @@ export async function PUT(request: Request) {
     });
   } catch (error: any) {
     console.error("Inventory PUT error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
+    const userId = searchParams.get("userId");
+
+    if (!id) {
+      return NextResponse.json({ error: "id é obrigatório" }, { status: 400 });
+    }
+
+    await convex.mutation(api.inventory.deleteItem, {
+      id: id as any,
+      userId: userId ? (userId as any) : undefined,
+    });
+
+    return NextResponse.json({ success: true, message: "Item excluído do estoque com sucesso." });
+  } catch (error: any) {
+    console.error("Inventory DELETE error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
