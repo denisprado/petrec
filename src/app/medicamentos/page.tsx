@@ -16,10 +16,21 @@ import {
   AlertTriangle,
   Package,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, isValid } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { MedicationModal } from "@/components/MedicationModal";
 import { StockForecastBadge } from "@/components/StockForecastBadge";
+
+function safeFormat(dateVal: any, formatPattern: string, options?: any): string {
+  if (!dateVal) return "";
+  try {
+    const d = typeof dateVal === "number" || typeof dateVal === "string" ? new Date(dateVal) : dateVal;
+    if (!isValid(d)) return "";
+    return format(d, formatPattern, options);
+  } catch {
+    return "";
+  }
+}
 
 export default function MedicamentosPage() {
   const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
@@ -186,7 +197,7 @@ export default function MedicamentosPage() {
         ) : (
           <div className="space-y-3">
             {administrations.map((adm) => {
-              const timeStr = format(new Date(adm.scheduledAt), "HH:mm");
+              const timeStr = safeFormat(adm.scheduledAt, "HH:mm") || "--:--";
               const isDone = adm.status === "administered";
               const isSkipped = adm.status === "skipped";
 
@@ -217,7 +228,7 @@ export default function MedicamentosPage() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-slate-900 text-base">
-                          {adm.medication.name}
+                          {adm.medication?.name || "Medicamento"}
                         </span>
                         {isDone ? (
                           <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
@@ -235,8 +246,8 @@ export default function MedicamentosPage() {
                       </div>
 
                       <div className="text-xs text-slate-600 mt-0.5">
-                        Dose: {adm.quantity} {adm.medication.unit || "comprimido"} •{" "}
-                        {adm.medication.instructions || "Sem instruções adicionais"}
+                        Dose: {adm.quantity} {adm.medication?.unit || "dose"} •{" "}
+                        {adm.medication?.instructions || "Sem instruções adicionais"}
                       </div>
 
                       {/* Informação de quem administrou (Auditoria Cruzada de Tutores) */}
@@ -245,11 +256,11 @@ export default function MedicamentosPage() {
                           <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                           <span>
                             Administrado por <strong>{adm.administeredBy?.name || "Tutor"}</strong> às{" "}
-                            {format(
-                              new Date(adm.administeredAt || adm.scheduledAt),
+                            {safeFormat(
+                              adm.administeredAt || adm.scheduledAt,
                               "HH:mm",
                               { locale: ptBR }
-                            )}
+                            ) || "--:--"}
                           </span>
                         </div>
                       )}
