@@ -23,9 +23,20 @@ import {
   Settings,
 } from "lucide-react";
 import Link from "next/link";
-import { format } from "date-fns";
+import { format, isValid } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { PetModal } from "@/components/PetModal";
+
+function safeFormat(dateVal: any, formatPattern: string, options?: any): string {
+  if (!dateVal) return "";
+  try {
+    const d = typeof dateVal === "number" || typeof dateVal === "string" ? new Date(dateVal) : dateVal;
+    if (!isValid(d)) return "";
+    return format(d, formatPattern, options);
+  } catch {
+    return "";
+  }
+}
 
 export default function DashboardPage() {
   const {
@@ -411,7 +422,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100 text-xs">
                   <span className="text-slate-500">
                     Reforço previsto:{" "}
-                    <strong>{format(new Date(vac.nextDueDate), "dd/MM/yyyy")}</strong>
+                    <strong>{safeFormat(vac.nextDueDate, "dd/MM/yyyy") || "Não informado"}</strong>
                   </span>
                   <Link
                     href="/saude"
@@ -482,7 +493,7 @@ export default function DashboardPage() {
             ) : (
               <div className="space-y-3">
                 {administrations.map((adm: any) => {
-                  const timeStr = format(new Date(adm.scheduledAt), "HH:mm");
+                  const timeStr = safeFormat(adm.scheduledAt, "HH:mm") || "--:--";
                   const isDone = adm.status === "administered";
                   const isSkipped = adm.status === "skipped";
 
@@ -525,7 +536,7 @@ export default function DashboardPage() {
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               <span>
                                 Administrado por {adm.administeredBy?.name || "Tutor"} às{" "}
-                                {format(new Date(adm.administeredAt || adm.scheduledAt), "HH:mm")}
+                                {safeFormat(adm.administeredAt || adm.scheduledAt, "HH:mm") || "--:--"}
                               </span>
                             </div>
                           )}
@@ -643,7 +654,7 @@ export default function DashboardPage() {
                     <span className="font-bold text-slate-900">{log.user?.name}: </span>
                     <span className="text-slate-600">{log.action}</span>
                     <div className="text-[10px] text-slate-400 mt-0.5">
-                      {format(new Date(log.timestamp), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                      {safeFormat(log.timestamp, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR }) || "Data não registrada"}
                     </div>
                   </div>
                 </div>

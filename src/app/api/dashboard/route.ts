@@ -161,7 +161,11 @@ export async function GET(request: Request) {
       },
       inventory: stockForecasts,
       medications: (medications || []).map((m: any) => ({ ...m, id: m._id })),
-      recentActivities: (recentActivities || []).map((l: any) => ({ ...l, id: l._id })),
+      recentActivities: (recentActivities || []).map((l: any) => ({
+        ...l,
+        id: l._id,
+        timestamp: l.timestamp || l._creationTime || new Date().toISOString(),
+      })),
     });
   } catch (error: any) {
     console.error("Dashboard API error:", error);
