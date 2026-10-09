@@ -36,35 +36,35 @@ interface AppContextType {
 
 export const DEMO_USERS: DemoUser[] = [
   {
-    id: "ks7er4b93nm6erj3x0z1regwyn8fxfk5",
+    id: "ks7endyw8ycn8cnpdg1aywjrnd8fws99",
     name: "Denis Forigo",
     email: "denis@petrec.app",
     avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Owner (Proprietário)",
   },
   {
-    id: "ks79f77bxgkddpqaw6yxqg42yh8fxcr3",
+    id: "ks7cmjwtpwt8xxgvq83erqtcbs8fwa34",
     name: "Ana Silva",
     email: "ana@petrec.app",
     avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Co-owner (Coproprietária)",
   },
   {
-    id: "ks7d0qz0c65tz2d9a3k70w06nn8fxqxk",
+    id: "ks7adge2fy5y4nezk2cg3tg1b58fxycz",
     name: "João Cuidador",
     email: "joao@petrec.app",
     avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Caregiver (Cuidador)",
   },
   {
-    id: "ks71njatd3kzzac1g9ad793fbd8fw1ny",
+    id: "ks7drf6ytedpxjdqsfmdyfznhs8fxr7h",
     name: "Dra. Camila Ramos",
     email: "camila.vet@petrec.app",
     avatar: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=150&auto=format&fit=crop&q=80",
     roleDescription: "Médica Veterinária (CRMV-SP 24890)",
   },
   {
-    id: "ks73gqd5bnaa1nps2xvcw5mmqd8fwd0w",
+    id: "ks76896mfy5m6ftvbg4xenyn2x8fxz6j",
     name: "Carlos Sitter",
     email: "carlos.sitter@petrec.app",
     avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
@@ -181,9 +181,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // Mapear IDs reais dos usuários cadastrados no banco
         const mappedUsers = DEMO_USERS.map((du) => {
           const memberFound = members.find((m: any) => m.user?.email === du.email);
-          if (memberFound) return { ...du, id: memberFound.user.id };
+          if (memberFound) return { ...du, id: memberFound.user._id || memberFound.user.id };
           const userFound = allDbUsers.find((u: any) => u.email === du.email);
-          if (userFound) return { ...du, id: userFound.id };
+          if (userFound) return { ...du, id: userFound._id || userFound.id };
           return du;
         });
 

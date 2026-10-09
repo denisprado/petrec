@@ -131,10 +131,19 @@ export default function WhatsAppPage() {
 
       const data = await res.json();
 
+      let replyContent = data.replyText;
+      if (!replyContent) {
+        if (data.error) {
+          replyContent = `⚠️ Erro no servidor: ${data.error}`;
+        } else {
+          replyContent = "Mensagem recebida.";
+        }
+      }
+
       const botMsg: ChatMessage = {
         id: `bot-${Date.now()}`,
         sender: "bot",
-        text: data.replyText || "Mensagem processada.",
+        text: replyContent,
         time: format(new Date(), "HH:mm"),
       };
 
@@ -146,8 +155,15 @@ export default function WhatsAppPage() {
         setTimeout(() => setToastMessage(null), 4000);
         triggerRefresh(); // Atualiza dashboard e estoque em tempo real!
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      const botMsg: ChatMessage = {
+        id: `bot-${Date.now()}`,
+        sender: "bot",
+        text: `⚠️ Erro ao processar mensagem: ${err.message || "Falha de conexão"}`,
+        time: format(new Date(), "HH:mm"),
+      };
+      setMessages((prev) => [...prev, botMsg]);
     } finally {
       setIsSending(false);
     }
@@ -234,7 +250,7 @@ export default function WhatsAppPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    <span>Conectado e Verificado</span>
+                    <span>Conectado e Ativo</span>
                   </span>
                   <button
                     onClick={handleDisconnect}
@@ -248,66 +264,104 @@ export default function WhatsAppPage() {
                   {connectedPhone}
                 </div>
                 <p className="text-[11px] text-emerald-800">
-                  Todas as mensagens deste número atualizarão o banco de dados como ações realizadas por{" "}
+                  Todas as mensagens enviadas no simulador interagirão diretamente como{" "}
                   <strong>{currentUser.name}</strong>.
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
-                  <div className="font-bold flex items-center gap-1.5 mb-1">
-                    <AlertCircle className="w-4 h-4 text-amber-600" />
-                    <span>Nenhum número conectado para {currentUser.name}</span>
-                  </div>
-                  <p className="text-[11px] text-amber-800">
-                    Vincule seu número para testar as ações rápidas pelo WhatsApp.
-                  </p>
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
+                <div className="font-bold flex items-center gap-1.5 mb-1">
+                  <AlertCircle className="w-4 h-4 text-amber-600" />
+                  <span>Nenhum número conectado para {currentUser.name}</span>
                 </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-700 block">
-                    Número do WhatsApp para teste:
-                  </label>
-                  <input
-                    type="text"
-                    value={phoneInput}
-                    onChange={(e) => setPhoneInput(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 font-mono"
-                    placeholder="+55 19 98888-7777"
-                  />
-                </div>
-
-                {pairingToken && (
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Código de Conexão:</span>
-                      <div className="flex items-center gap-1.5">
-                        <code className="bg-slate-200 px-2 py-0.5 rounded font-black text-slate-800">
-                          {pairingToken}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={handleRegenerateToken}
-                          disabled={loadingPairing}
-                          className="p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-slate-800 transition"
-                          title="Gerar novo código"
-                        >
-                          <RefreshCw className={`w-3.5 h-3.5 ${loadingPairing ? "animate-spin" : ""}`} />
-                        </button>
-                      </div>
-                    </div>
-                    <button
-                      onClick={handleQuickConnect}
-                      disabled={isSending}
-                      className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
-                    >
-                      <Zap className="w-4 h-4" />
-                      <span>{isSending ? "Conectando..." : "Conectar com 1 Clique (Simulação)"}</span>
-                    </button>
-                  </div>
-                )}
+                <p className="text-[11px] text-amber-800">
+                  Insira o número desejado abaixo e clique em conectar para vincular sua conta imediatamente.
+                </p>
               </div>
             )}
+
+            {/* Formulário de alteração / conexão direta com 1 clique */}
+            <div className="space-y-3 pt-1 border-t border-slate-100">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700 block">
+                  {connectedPhone ? "Alterar número para simulação:" : "Número do WhatsApp para teste:"}
+                </label>
+                <input
+                  type="text"
+                  value={phoneInput}
+                  onChange={(e) => setPhoneInput(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 font-mono"
+                  placeholder="+55 19 98888-7777"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!phoneInput.trim()) return;
+                    setIsSending(true);
+                    try {
+                      const res = await fetch("/api/whatsapp/pairing", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          userId: currentUser.id,
+                          phone: phoneInput.trim(),
+                        }),
+                      });
+                      const data = await res.json();
+                      if (data.success) {
+                        setConnectedPhone(data.connectedPhone || phoneInput.trim());
+                        setToastMessage("✓ Número conectado com sucesso!");
+                        setTimeout(() => setToastMessage(null), 3500);
+                        triggerRefresh();
+                      } else {
+                        alert(data.error || "Falha ao conectar.");
+                      }
+                    } catch (err: any) {
+                      alert(`Erro: ${err.message}`);
+                    } finally {
+                      setIsSending(false);
+                    }
+                  }}
+                  disabled={isSending}
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span>{isSending ? "Conectando..." : connectedPhone ? "Atualizar Número" : "Conectar com 1 Clique"}</span>
+                </button>
+              </div>
+
+              {pairingToken && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-500">Código de Conexão alternativo:</span>
+                    <div className="flex items-center gap-1.5">
+                      <code className="bg-slate-200 px-2 py-0.5 rounded font-black text-slate-800">
+                        {pairingToken}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={handleRegenerateToken}
+                        disabled={loadingPairing}
+                        className="p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-slate-800 transition"
+                        title="Gerar novo código"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${loadingPairing ? "animate-spin" : ""}`} />
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleQuickConnect}
+                    disabled={isSending}
+                    className="w-full py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg font-bold text-[11px] transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <span>Simular envio do código no chat</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Estado Interno da Máquina de Estados (Contexto do Bot) */}

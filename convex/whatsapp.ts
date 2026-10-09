@@ -107,6 +107,58 @@ export const pairByToken = mutation({
   },
 });
 
+export const directConnect = mutation({
+  args: {
+    userId: v.id("users"),
+    phone: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const user = await ctx.db.get(args.userId);
+    if (!user) return { success: false, error: "Usuário não encontrado" };
+
+    // Atualizar telefone do usuário
+    await ctx.db.patch(user._id, {
+      whatsappPhoneNumber: args.phone,
+      whatsappVerifiedAt: now,
+    });
+
+    // Buscar primeiro pet do usuário
+    const membership = await ctx.db
+      .query("petMembers")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .first();
+
+    const firstPetId = membership?.petId;
+
+    // Criar ou atualizar sessão
+    const existingSession = await ctx.db
+      .query("whatsappSessions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .first();
+
+    if (existingSession) {
+      await ctx.db.patch(existingSession._id, {
+        currentPetId: firstPetId,
+        state: "IDLE",
+        pendingActionPayload: undefined,
+      });
+    } else {
+      await ctx.db.insert("whatsappSessions", {
+        userId: user._id,
+        currentPetId: firstPetId,
+        state: "IDLE",
+      });
+    }
+
+    return {
+      success: true,
+      user: await ctx.db.get(user._id),
+      petId: firstPetId,
+    };
+  },
+});
+
 export const updateSession = mutation({
   args: {
     userId: v.id("users"),
@@ -136,3 +188,4 @@ export const updateSession = mutation({
     }
   },
 });
+
