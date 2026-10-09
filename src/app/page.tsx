@@ -21,6 +21,7 @@ import {
   Syringe,
   Sparkles,
   Settings,
+  Edit2,
 } from "lucide-react";
 import Link from "next/link";
 import { format, isValid } from "date-fns";
@@ -605,8 +606,17 @@ export default function DashboardPage() {
                     className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between"
                   >
                     <div>
-                      <div className="font-bold text-xs text-slate-800 line-clamp-1">
-                        {racao.name}
+                      <div className="flex items-start justify-between gap-1">
+                        <div className="font-bold text-xs text-slate-800 line-clamp-1">
+                          {racao.name}
+                        </div>
+                        <Link
+                          href="/estoque"
+                          className="text-slate-400 hover:text-teal-700 p-0.5 hover:bg-slate-200/60 rounded transition shrink-0"
+                          title="Gerenciar / Editar no Estoque"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </Link>
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">
                         Restam: <strong>{(racao.currentQuantity / 1000).toFixed(1)} kg</strong>

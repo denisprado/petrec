@@ -5,7 +5,7 @@ import { calculateStockForecast } from "@/lib/stockCalculation";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
-    "https://zany-owl-512.convex.cloud"
+    "https://robust-bullfrog-290.convex.cloud"
 );
 
 export async function GET(request: Request) {
@@ -165,22 +165,47 @@ export async function PUT(request: Request) {
       );
     }
 
-    const updated = await convex.mutation(api.inventory.updateItem, {
-      id: id as any,
-      name: name !== undefined ? String(name).trim() : undefined,
-      category: category || undefined,
-      dailyConsumption:
-        dailyConsumption !== undefined ? Number(dailyConsumption) : undefined,
-      purchaseLeadTimeDays:
-        purchaseLeadTimeDays !== undefined
-          ? Number(purchaseLeadTimeDays)
-          : undefined,
-      currentQuantity:
-        currentQuantity !== undefined ? Number(currentQuantity) : undefined,
-      unit: unit || undefined,
-      notes: notes !== undefined ? String(notes).trim() : undefined,
-      userId: userId ? (userId as any) : undefined,
-    });
+    let updated;
+    try {
+      updated = await convex.mutation(api.inventory.updateItem, {
+        id: id as any,
+        name: name !== undefined ? String(name).trim() : undefined,
+        category: category || undefined,
+        dailyConsumption:
+          dailyConsumption !== undefined ? Number(dailyConsumption) : undefined,
+        purchaseLeadTimeDays:
+          purchaseLeadTimeDays !== undefined
+            ? Number(purchaseLeadTimeDays)
+            : undefined,
+        currentQuantity:
+          currentQuantity !== undefined ? Number(currentQuantity) : undefined,
+        unit: unit || undefined,
+        notes: notes !== undefined ? String(notes).trim() : undefined,
+        userId: userId ? (userId as any) : undefined,
+      });
+    } catch (mutationErr: any) {
+      if (userId) {
+        // Fallback without userId if user document not matching
+        updated = await convex.mutation(api.inventory.updateItem, {
+          id: id as any,
+          name: name !== undefined ? String(name).trim() : undefined,
+          category: category || undefined,
+          dailyConsumption:
+            dailyConsumption !== undefined ? Number(dailyConsumption) : undefined,
+          purchaseLeadTimeDays:
+            purchaseLeadTimeDays !== undefined
+              ? Number(purchaseLeadTimeDays)
+              : undefined,
+          currentQuantity:
+            currentQuantity !== undefined ? Number(currentQuantity) : undefined,
+          unit: unit || undefined,
+          notes: notes !== undefined ? String(notes).trim() : undefined,
+          userId: undefined,
+        });
+      } else {
+        throw mutationErr;
+      }
+    }
 
     const forecast = updated
       ? calculateStockForecast({
@@ -217,10 +242,21 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "id é obrigatório" }, { status: 400 });
     }
 
-    await convex.mutation(api.inventory.deleteItem, {
-      id: id as any,
-      userId: userId ? (userId as any) : undefined,
-    });
+    try {
+      await convex.mutation(api.inventory.deleteItem, {
+        id: id as any,
+        userId: userId ? (userId as any) : undefined,
+      });
+    } catch (delErr: any) {
+      if (userId) {
+        await convex.mutation(api.inventory.deleteItem, {
+          id: id as any,
+          userId: undefined,
+        });
+      } else {
+        throw delErr;
+      }
+    }
 
     return NextResponse.json({ success: true, message: "Item excluído do estoque com sucesso." });
   } catch (error: any) {

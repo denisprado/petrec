@@ -4,7 +4,7 @@ import { api } from "../../../../../convex/_generated/api";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
-    "https://zany-owl-512.convex.cloud"
+    "https://robust-bullfrog-290.convex.cloud"
 );
 
 export async function GET(request: Request) {

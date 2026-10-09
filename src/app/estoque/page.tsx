@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useApp } from "@/context/AppContext";
 import { StockForecastBadge } from "@/components/StockForecastBadge";
 import {
@@ -17,27 +18,49 @@ import {
   Calendar,
   Edit2,
   Trash2,
+  X,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function EstoquePage() {
-  const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
+  const {
+    activePetId,
+    setActivePetId,
+    pets,
+    currentUser,
+    refreshTrigger,
+    triggerRefresh,
+    permissions,
+  } = useApp();
+
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mounted, setMounted] = useState(false);
 
-  // Modal / Form de Transação
+  // Modal / Form de Transação (Consumo / Entrada / Ajuste)
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
-  const [transactionType, setTransactionType] = useState<"consumption" | "purchase" | "adjustment">("consumption");
+  const [transactionType, setTransactionType] = useState<
+    "consumption" | "purchase" | "adjustment"
+  >("consumption");
   const [transQuantity, setTransQuantity] = useState<string>("");
   const [transNotes, setTransNotes] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  // Modal de edição de parâmetros (consumo diário e lead time)
-  const [editParamItem, setEditParamItem] = useState<any | null>(null);
-  const [newDailyConsumption, setNewDailyConsumption] = useState<string>("");
-  const [newLeadTime, setNewLeadTime] = useState<string>("");
+  // Modal de edição completa do item de estoque / ração
+  const [editItem, setEditItem] = useState<any | null>(null);
+  const [editItemName, setEditItemName] = useState("");
+  const [editItemCategory, setEditItemCategory] = useState("racao");
+  const [editItemUnit, setEditItemUnit] = useState("g");
+  const [editItemCurrentQty, setEditItemCurrentQty] = useState("");
+  const [editItemDailyConsumption, setEditItemDailyConsumption] = useState("");
+  const [editItemLeadTime, setEditItemLeadTime] = useState("7");
+  const [editItemNotes, setEditItemNotes] = useState("");
+
+  // Modal de confirmação de exclusão
+  const [itemToDelete, setItemToDelete] = useState<any | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Modal de cadastro de novo item de estoque (ex: ração)
   const [showNewItemModal, setShowNewItemModal] = useState(false);
@@ -48,6 +71,10 @@ export default function EstoquePage() {
   const [newItemDailyConsumption, setNewItemDailyConsumption] = useState("");
   const [newItemLeadTime, setNewItemLeadTime] = useState("7");
   const [newItemNotes, setNewItemNotes] = useState("");
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -107,50 +134,108 @@ export default function EstoquePage() {
       });
 
       if (res.ok) {
-        setFeedback("Transação registrada e previsão recalculada com sucesso!");
+        setFeedback("✓ Transação registrada e previsão recalculada com sucesso!");
         setTimeout(() => setFeedback(null), 3500);
         setSelectedItem(null);
         setTransQuantity("");
         setTransNotes("");
         triggerRefresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Erro ao registrar transação.");
       }
     } catch (err) {
       console.error(err);
+      alert("Erro ao comunicar com o servidor.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleParamsUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editParamItem) return;
+  const openEditModal = (item: any) => {
+    setEditItem(item);
+    setEditItemName(item.name || "");
+    setEditItemCategory(item.category || "racao");
+    setEditItemUnit(item.unit || "g");
+    setEditItemCurrentQty(String(item.currentQuantity ?? 0));
+    setEditItemDailyConsumption(String(item.dailyConsumption ?? 0));
+    setEditItemLeadTime(String(item.purchaseLeadTimeDays ?? 7));
+    setEditItemNotes(item.notes || "");
+  };
 
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editItem || !editItemName) return;
+
+    setIsSubmitting(true);
     try {
       const res = await fetch("/api/inventory", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: editParamItem.id,
-          dailyConsumption: parseFloat(newDailyConsumption),
-          purchaseLeadTimeDays: parseInt(newLeadTime),
+          id: editItem.id || editItem._id,
+          name: editItemName.trim(),
+          category: editItemCategory,
+          unit: editItemUnit,
+          currentQuantity: parseFloat(editItemCurrentQty || "0"),
+          dailyConsumption: parseFloat(editItemDailyConsumption || "0"),
+          purchaseLeadTimeDays: parseInt(editItemLeadTime || "7"),
+          notes: editItemNotes.trim(),
           userId: currentUser.id,
         }),
       });
 
       if (res.ok) {
-        setFeedback("Parâmetros de consumo e compra atualizados com sucesso!");
+        setFeedback(`✓ "${editItemName}" atualizado com sucesso!`);
         setTimeout(() => setFeedback(null), 3500);
-        setEditParamItem(null);
+        setEditItem(null);
         triggerRefresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Erro ao atualizar dados do item.");
       }
     } catch (err) {
       console.error(err);
+      alert("Erro ao atualizar item.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteItem = async () => {
+    if (!itemToDelete) return;
+
+    setIsDeleting(true);
+    try {
+      const itemId = itemToDelete.id || itemToDelete._id;
+      const res = await fetch(
+        `/api/inventory?id=${itemId}&userId=${currentUser.id}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      if (res.ok) {
+        setFeedback(`✓ "${itemToDelete.name}" foi excluído do estoque com sucesso.`);
+        setTimeout(() => setFeedback(null), 3500);
+        setItemToDelete(null);
+        triggerRefresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Erro ao excluir item do estoque.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao excluir item.");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
   const handleCreateItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newItemName || !activePetId) return;
+    const petId = activePetId || pets[0]?.id;
+    if (!newItemName || !petId) return;
 
     setIsSubmitting(true);
     try {
@@ -159,14 +244,14 @@ export default function EstoquePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           isNewItem: true,
-          petId: activePetId,
-          name: newItemName,
+          petId: petId,
+          name: newItemName.trim(),
           category: newItemCategory,
           unit: newItemUnit,
           currentQuantity: parseFloat(newItemCurrentQty || "0"),
           dailyConsumption: parseFloat(newItemDailyConsumption || "0"),
           purchaseLeadTimeDays: parseInt(newItemLeadTime || "7"),
-          notes: newItemNotes,
+          notes: newItemNotes.trim(),
           userId: currentUser.id,
         }),
       });
@@ -180,9 +265,13 @@ export default function EstoquePage() {
         setNewItemDailyConsumption("");
         setNewItemNotes("");
         triggerRefresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Erro ao cadastrar novo item.");
       }
     } catch (err) {
       console.error(err);
+      alert("Erro ao cadastrar item no estoque.");
     } finally {
       setIsSubmitting(false);
     }
@@ -192,8 +281,8 @@ export default function EstoquePage() {
     <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 space-y-6">
       {/* Toast */}
       {feedback && (
-        <div className="fixed top-16 right-4 z-50 bg-emerald-700 text-white px-4 py-2.5 rounded-xl shadow-lg text-sm font-semibold flex items-center gap-2">
-          <CheckCircle2 className="w-5 h-5" />
+        <div className="fixed top-16 right-4 z-[99999] bg-emerald-700 text-white px-4 py-2.5 rounded-xl shadow-lg text-sm font-semibold flex items-center gap-2 animate-in slide-in-from-top-2">
+          <CheckCircle2 className="w-5 h-5 shrink-0" />
           <span>{feedback}</span>
         </div>
       )}
@@ -212,7 +301,7 @@ export default function EstoquePage() {
 
         <button
           onClick={() => setShowNewItemModal(true)}
-          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5"
+          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>Cadastrar Item / Ração</span>
@@ -248,6 +337,12 @@ export default function EstoquePage() {
         <div className="text-center py-12 bg-white rounded-2xl border border-slate-200">
           <Boxes className="w-12 h-12 text-slate-300 mx-auto mb-2" />
           <p className="text-slate-600 font-semibold">Nenhum item cadastrado no estoque deste pet.</p>
+          <button
+            onClick={() => setShowNewItemModal(true)}
+            className="mt-3 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition"
+          >
+            Cadastrar Primeiro Item / Ração
+          </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -259,15 +354,46 @@ export default function EstoquePage() {
                 className="bg-white rounded-2xl border border-slate-200 shadow-2xs p-4 sm:p-5 flex flex-col justify-between hover:shadow-xs transition"
               >
                 <div>
-                  {/* Topo do Card */}
+                  {/* Topo do Card com Categoria, Status e Ações Rápidas de Edição/Exclusão */}
                   <div className="flex items-start justify-between gap-2 mb-2">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                      {item.category}
-                    </span>
-                    <StockForecastBadge
-                      status={fc.status}
-                      overdueDays={fc.overdueDays}
-                    />
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
+                        {item.category}
+                      </span>
+                      {item.notes && (
+                        <span
+                          className="text-[10px] text-slate-400 italic truncate max-w-[110px]"
+                          title={item.notes}
+                        >
+                          • {item.notes}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <StockForecastBadge
+                        status={fc.status}
+                        overdueDays={fc.overdueDays}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(item)}
+                        className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition cursor-pointer"
+                        title="Editar ração / item"
+                        aria-label="Editar item"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setItemToDelete(item)}
+                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                        title="Excluir ração / item"
+                        aria-label="Excluir item"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <h3 className="text-base font-bold text-slate-900 leading-snug">
@@ -337,15 +463,15 @@ export default function EstoquePage() {
                   </div>
                 </div>
 
-                {/* Botões de Ação */}
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                {/* Botões de Ação na Base do Card */}
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-1.5">
                   <button
                     onClick={() => {
                       setSelectedItem(item);
                       setTransactionType("consumption");
                       setTransQuantity(String(item.dailyConsumption || 1));
                     }}
-                    className="flex-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1"
+                    className="flex-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
                     title="Registrar consumo real"
                   >
                     <Minus className="w-3.5 h-3.5" />
@@ -358,7 +484,7 @@ export default function EstoquePage() {
                       setTransactionType("purchase");
                       setTransQuantity("");
                     }}
-                    className="flex-1 py-1.5 px-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1"
+                    className="flex-1 py-1.5 px-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
                     title="Registrar entrada/compra"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -366,15 +492,21 @@ export default function EstoquePage() {
                   </button>
 
                   <button
-                    onClick={() => {
-                      setEditParamItem(item);
-                      setNewDailyConsumption(String(item.dailyConsumption));
-                      setNewLeadTime(String(item.purchaseLeadTimeDays));
-                    }}
-                    className="p-1.5 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-lg transition"
-                    title="Ajustar consumo diário e antecedência"
+                    onClick={() => openEditModal(item)}
+                    className="py-1.5 px-2.5 bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 border border-slate-200 cursor-pointer"
+                    title="Editar informações completas deste item"
                   >
-                    <Sliders className="w-4 h-4" />
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span>Editar</span>
+                  </button>
+
+                  <button
+                    onClick={() => setItemToDelete(item)}
+                    className="p-1.5 bg-slate-50 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg text-xs transition border border-slate-200 cursor-pointer"
+                    title="Excluir ração / item do estoque"
+                    aria-label="Excluir ração / item"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
@@ -384,320 +516,516 @@ export default function EstoquePage() {
       )}
 
       {/* Modal de Registro de Transação (Consumo, Compra, Ajuste) */}
-      {selectedItem && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95">
-            <h3 className="text-lg font-black text-slate-900 mb-1">
-              Registrar Movimentação de Estoque
-            </h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Item: <strong>{selectedItem.name}</strong> • Tutor:{" "}
-              <strong>{currentUser.name}</strong>
-            </p>
-
-            <form onSubmit={handleTransactionSubmit} className="space-y-4">
-              {/* Tipo de Transação */}
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1.5">
-                  Tipo da Transação
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setTransactionType("consumption")}
-                    className={`py-2 text-xs font-bold rounded-xl border transition ${
-                      transactionType === "consumption"
-                        ? "bg-slate-900 text-white border-slate-900"
-                        : "bg-slate-50 text-slate-700 border-slate-200"
-                    }`}
-                  >
-                    Consumo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTransactionType("purchase")}
-                    className={`py-2 text-xs font-bold rounded-xl border transition ${
-                      transactionType === "purchase"
-                        ? "bg-emerald-600 text-white border-emerald-600"
-                        : "bg-slate-50 text-slate-700 border-slate-200"
-                    }`}
-                  >
-                    Entrada
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTransactionType("adjustment")}
-                    className={`py-2 text-xs font-bold rounded-xl border transition ${
-                      transactionType === "adjustment"
-                        ? "bg-amber-600 text-white border-amber-600"
-                        : "bg-slate-50 text-slate-700 border-slate-200"
-                    }`}
-                  >
-                    Ajuste Físico
-                  </button>
-                </div>
-              </div>
-
-              {/* Quantidade */}
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Quantidade ({selectedItem.unit})
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  value={transQuantity}
-                  onChange={(e) => setTransQuantity(e.target.value)}
-                  placeholder={`Ex: ${selectedItem.dailyConsumption || 10}`}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              {/* Observações */}
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Observações / Motivo
-                </label>
-                <input
-                  type="text"
-                  value={transNotes}
-                  onChange={(e) => setTransNotes(e.target.value)}
-                  placeholder="Ex: Refeição da tarde, pacote novo, etc."
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              {/* Botões */}
-              <div className="flex justify-end gap-2 pt-2">
+      {selectedItem &&
+        mounted &&
+        createPortal(
+          <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95">
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <h3 className="text-lg font-black text-slate-900">
+                  Registrar Movimentação de Estoque
+                </h3>
                 <button
                   type="button"
                   onClick={() => setSelectedItem(null)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100"
                 >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs"
-                >
-                  {isSubmitting ? "Gravando..." : "Salvar Transação"}
+                  <X className="w-4 h-4" />
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+              <p className="text-xs text-slate-500 mb-4">
+                Item: <strong>{selectedItem.name}</strong> • Tutor:{" "}
+                <strong>{currentUser.name}</strong>
+              </p>
 
-      {/* Modal de Ajuste de Parâmetros de Consumo e Lead Time */}
-      {editParamItem && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl">
-            <h3 className="text-lg font-black text-slate-900 mb-1">
-              Configurar Consumo & Antecedência
-            </h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Item: <strong>{editParamItem.name}</strong>
-            </p>
+              <form onSubmit={handleTransactionSubmit} className="space-y-4">
+                {/* Tipo de Transação */}
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                    Tipo da Transação
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTransactionType("consumption")}
+                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                        transactionType === "consumption"
+                          ? "bg-slate-900 text-white border-slate-900"
+                          : "bg-slate-50 text-slate-700 border-slate-200"
+                      }`}
+                    >
+                      Consumo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTransactionType("purchase")}
+                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                        transactionType === "purchase"
+                          ? "bg-emerald-600 text-white border-emerald-600"
+                          : "bg-slate-50 text-slate-700 border-slate-200"
+                      }`}
+                    >
+                      Entrada
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTransactionType("adjustment")}
+                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                        transactionType === "adjustment"
+                          ? "bg-amber-600 text-white border-amber-600"
+                          : "bg-slate-50 text-slate-700 border-slate-200"
+                      }`}
+                    >
+                      Ajuste Físico
+                    </button>
+                  </div>
+                </div>
 
-            <form onSubmit={handleParamsUpdate} className="space-y-4">
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Consumo Diário Estimado ({editParamItem.unit}/dia)
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  value={newDailyConsumption}
-                  onChange={(e) => setNewDailyConsumption(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-                <span className="text-[11px] text-slate-400 mt-1 block">
-                  Altere quando a dose ou dieta do animal for reajustada.
-                </span>
-              </div>
+                {/* Quantidade */}
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Quantidade ({selectedItem.unit})
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    value={transQuantity}
+                    onChange={(e) => setTransQuantity(e.target.value)}
+                    placeholder={`Ex: ${selectedItem.dailyConsumption || 10}`}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
 
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Antecedência para Comprar (Dias de Lead Time)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  value={newLeadTime}
-                  onChange={(e) => setNewLeadTime(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-                <span className="text-[11px] text-slate-400 mt-1 block">
-                  Quantos dias antes do término você quer receber o alerta para comprar.
-                </span>
-              </div>
+                {/* Observações */}
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Observações / Motivo
+                  </label>
+                  <input
+                    type="text"
+                    value={transNotes}
+                    onChange={(e) => setTransNotes(e.target.value)}
+                    placeholder="Ex: Refeição da tarde, pacote novo, etc."
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
 
-              <div className="flex justify-end gap-2 pt-2">
+                {/* Botões */}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedItem(null)}
+                    className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs cursor-pointer disabled:opacity-50"
+                  >
+                    {isSubmitting ? "Gravando..." : "Salvar Transação"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Modal de Edição Completa de Item / Ração */}
+      {editItem &&
+        mounted &&
+        createPortal(
+          <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+                    <Edit2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900">
+                      Editar Item de Estoque / Ração
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Atualize nome, categoria, saldo atual, consumo diário ou observações.
+                    </p>
+                  </div>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setEditParamItem(null)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                  onClick={() => setEditItem(null)}
+                  className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleEditSubmit} className="space-y-4 mt-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Nome do Produto / Ração
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: Ração Premier Formula Adulto Raças Grandes"
+                    value={editItemName}
+                    onChange={(e) => setEditItemName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Categoria
+                    </label>
+                    <select
+                      value={editItemCategory}
+                      onChange={(e) => setEditItemCategory(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    >
+                      <option value="racao">Ração</option>
+                      <option value="petisco">Petisco</option>
+                      <option value="medicamento">Medicamento</option>
+                      <option value="suplemento">Suplemento</option>
+                      <option value="higiene">Higiene</option>
+                      <option value="outro">Outro</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Unidade de Medida
+                    </label>
+                    <select
+                      value={editItemUnit}
+                      onChange={(e) => setEditItemUnit(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    >
+                      <option value="g">Gramas (g)</option>
+                      <option value="kg">Quilos (kg)</option>
+                      <option value="unidades">Unidades</option>
+                      <option value="comprimidos">Comprimidos</option>
+                      <option value="ml">Mililitros (ml)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Estoque Atual ({editItemUnit})
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      value={editItemCurrentQty}
+                      onChange={(e) => setEditItemCurrentQty(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    />
+                    <span className="text-[11px] text-slate-400 mt-0.5 block">
+                      Saldo disponível hoje
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Consumo Diário ({editItemUnit}/dia)
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      value={editItemDailyConsumption}
+                      onChange={(e) => setEditItemDailyConsumption(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    />
+                    <span className="text-[11px] text-slate-400 mt-0.5 block">
+                      Dose ou consumo por dia
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Antecedência para Compra (Lead Time em dias)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={editItemLeadTime}
+                    onChange={(e) => setEditItemLeadTime(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                  <span className="text-[11px] text-slate-400 mt-0.5 block">
+                    Quantos dias antes do término emitir o alerta para comprar
+                  </span>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Observações / Marca / Sabor (Opcional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Sabor frango, embalagem fechada, lote..."
+                    value={editItemNotes}
+                    onChange={(e) => setEditItemNotes(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const itemToDel = editItem;
+                      setEditItem(null);
+                      setItemToDelete(itemToDel);
+                    }}
+                    className="px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Excluir este item</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditItem(null)}
+                      className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs cursor-pointer disabled:opacity-50"
+                    >
+                      {isSubmitting ? "Salvando..." : "Salvar Alterações"}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Modal de Confirmação de Exclusão */}
+      {itemToDelete &&
+        mounted &&
+        createPortal(
+          <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95">
+              <div className="flex items-start gap-3">
+                <div className="p-3 bg-red-100 text-red-600 rounded-2xl shrink-0">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Excluir Item do Estoque
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Esta ação não pode ser desfeita.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-xs text-slate-800">
+                  Tem certeza que deseja remover <strong>{itemToDelete.name}</strong>?
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                  Todas as movimentações de consumo, entradas registradas e itens da lista de compras associados a esta ração serão removidos permanentemente.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2.5 mt-5">
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => setItemToDelete(null)}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
-                  type="submit"
-                  className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs"
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={handleDeleteItem}
+                  className="px-5 py-2 text-xs font-bold bg-red-600 hover:bg-red-700 text-white rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
-                  Recalcular Previsão
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>{isDeleting ? "Excluindo..." : "Excluir Definitivamente"}</span>
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* Modal de Cadastro de Novo Item / Ração */}
-      {showNewItemModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95">
-            <h3 className="text-lg font-black text-slate-900 mb-1">
-              Cadastrar Item no Estoque
-            </h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Adicione rações, medicamentos, suplementos ou petiscos com controle de duração e compra.
-            </p>
-
-            <form onSubmit={handleCreateItem} className="space-y-3.5">
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Nome do Produto / Ração
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: Ração Golden Formula Frango 15kg"
-                  value={newItemName}
-                  onChange={(e) => setNewItemName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="text-xs font-bold text-slate-700 block mb-1">
-                    Categoria
-                  </label>
-                  <select
-                    value={newItemCategory}
-                    onChange={(e) => setNewItemCategory(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  >
-                    <option value="racao">Ração</option>
-                    <option value="petisco">Petisco</option>
-                    <option value="medicamento">Medicamento</option>
-                    <option value="higiene">Higiene</option>
-                    <option value="outro">Outro</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold text-slate-700 block mb-1">
-                    Unidade de Medida
-                  </label>
-                  <select
-                    value={newItemUnit}
-                    onChange={(e) => setNewItemUnit(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  >
-                    <option value="g">Gramas (g)</option>
-                    <option value="kg">Quilos (kg)</option>
-                    <option value="unidades">Unidades</option>
-                    <option value="comprimidos">Comprimidos</option>
-                    <option value="ml">Mililitros (ml)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="text-xs font-bold text-slate-700 block mb-1">
-                    Estoque Atual ({newItemUnit})
-                  </label>
-                  <input
-                    type="number"
-                    step="any"
-                    required
-                    placeholder="Ex: 15000"
-                    value={newItemCurrentQty}
-                    onChange={(e) => setNewItemCurrentQty(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold text-slate-700 block mb-1">
-                    Consumo Diário ({newItemUnit}/dia)
-                  </label>
-                  <input
-                    type="number"
-                    step="any"
-                    required
-                    placeholder="Ex: 350"
-                    value={newItemDailyConsumption}
-                    onChange={(e) => setNewItemDailyConsumption(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Antecedência para Compra (Lead Time em dias)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  placeholder="Ex: 7"
-                  value={newItemLeadTime}
-                  onChange={(e) => setNewItemLeadTime(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Observações (Opcional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: sabor frango & arroz, embalagem fechada"
-                  value={newItemNotes}
-                  onChange={(e) => setNewItemNotes(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
+      {showNewItemModal &&
+        mounted &&
+        createPortal(
+          <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <h3 className="text-lg font-black text-slate-900">
+                  Cadastrar Item no Estoque
+                </h3>
                 <button
                   type="button"
                   onClick={() => setShowNewItemModal(false)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100"
                 >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs"
-                >
-                  {isSubmitting ? "Cadastrando..." : "Cadastrar no Estoque"}
+                  <X className="w-4 h-4" />
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+              <p className="text-xs text-slate-500 mb-4">
+                Adicione rações, medicamentos, suplementos ou petiscos com controle de duração e compra.
+              </p>
+
+              <form onSubmit={handleCreateItem} className="space-y-3.5">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Nome do Produto / Ração
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: Ração Golden Formula Frango 15kg"
+                    value={newItemName}
+                    onChange={(e) => setNewItemName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Categoria
+                    </label>
+                    <select
+                      value={newItemCategory}
+                      onChange={(e) => setNewItemCategory(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    >
+                      <option value="racao">Ração</option>
+                      <option value="petisco">Petisco</option>
+                      <option value="medicamento">Medicamento</option>
+                      <option value="suplemento">Suplemento</option>
+                      <option value="higiene">Higiene</option>
+                      <option value="outro">Outro</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Unidade de Medida
+                    </label>
+                    <select
+                      value={newItemUnit}
+                      onChange={(e) => setNewItemUnit(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    >
+                      <option value="g">Gramas (g)</option>
+                      <option value="kg">Quilos (kg)</option>
+                      <option value="unidades">Unidades</option>
+                      <option value="comprimidos">Comprimidos</option>
+                      <option value="ml">Mililitros (ml)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Estoque Atual ({newItemUnit})
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      placeholder="Ex: 15000"
+                      value={newItemCurrentQty}
+                      onChange={(e) => setNewItemCurrentQty(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      Consumo Diário ({newItemUnit}/dia)
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      placeholder="Ex: 350"
+                      value={newItemDailyConsumption}
+                      onChange={(e) => setNewItemDailyConsumption(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Antecedência para Compra (Lead Time em dias)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    placeholder="Ex: 7"
+                    value={newItemLeadTime}
+                    onChange={(e) => setNewItemLeadTime(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Observações (Opcional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: sabor frango & arroz, embalagem fechada"
+                    value={newItemNotes}
+                    onChange={(e) => setNewItemNotes(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewItemModal(false)}
+                    className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition shadow-xs cursor-pointer disabled:opacity-50"
+                  >
+                    {isSubmitting ? "Cadastrando..." : "Cadastrar no Estoque"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
