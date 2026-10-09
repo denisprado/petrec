@@ -312,15 +312,17 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2 bg-black/20 backdrop-blur-md px-3 py-2 rounded-xl border border-white/10">
                 <span className="text-xs text-emerald-200 font-medium">Equipe:</span>
                 <div className="flex -space-x-2">
-                  {activePet.members?.map((m: any) => (
-                    <img
-                      key={m.id}
-                      src={m.user.avatar}
-                      title={`${m.user.name} (${m.role})`}
-                      alt={m.user.name}
-                      className="w-7 h-7 rounded-full border-2 border-emerald-900 object-cover"
-                    />
-                  ))}
+                  {activePet.members
+                    ?.filter((m: any) => m && m.user)
+                    .map((m: any) => (
+                      <img
+                        key={m.id || m._id}
+                        src={m.user?.avatar || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100"}
+                        title={`${m.user?.name || "Tutor"} (${m.role || "Tutor"})`}
+                        alt={m.user?.name || "Tutor"}
+                        className="w-7 h-7 rounded-full border-2 border-emerald-900 object-cover"
+                      />
+                    ))}
                 </div>
               </div>
 
@@ -523,10 +525,10 @@ export default function DashboardPage() {
 
                         <div>
                           <div className="font-bold text-slate-900 text-sm">
-                            {adm.medication.name}
+                            {adm.medication?.name || "Medicamento"}
                           </div>
                           <div className="text-xs text-slate-500">
-                            Dose: {adm.quantity} {adm.medication.unit || "dose"}
+                            Dose: {adm.quantity} {adm.medication?.unit || "dose"}
                             {adm.notes && ` • ${adm.notes}`}
                           </div>
 
@@ -644,14 +646,14 @@ export default function DashboardPage() {
 
             <div className="divide-y divide-slate-100">
               {recentActivities.slice(0, 5).map((log: any) => (
-                <div key={log.id} className="py-2.5 flex items-start gap-2.5 text-xs">
+                <div key={log.id || log._id} className="py-2.5 flex items-start gap-2.5 text-xs">
                   <img
                     src={log.user?.avatar || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100"}
-                    alt={log.user?.name}
+                    alt={log.user?.name || "Tutor"}
                     className="w-6 h-6 rounded-full object-cover mt-0.5 ring-1 ring-slate-200"
                   />
                   <div className="flex-1">
-                    <span className="font-bold text-slate-900">{log.user?.name}: </span>
+                    <span className="font-bold text-slate-900">{log.user?.name || "Tutor"}: </span>
                     <span className="text-slate-600">{log.action}</span>
                     <div className="text-[10px] text-slate-400 mt-0.5">
                       {safeFormat(log.timestamp, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR }) || "Data não registrada"}
