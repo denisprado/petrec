@@ -144,6 +144,17 @@ export async function POST(request: Request) {
   }
 }
 
+function formatWhatsAppRecipient(phone: string): string {
+  const clean = phone.replace(/\D/g, "");
+  // Se for celular do Brasil (DDI 55) com DDD e apenas 8 dígitos (total 12 dígitos), insere o 9º dígito:
+  if (clean.startsWith("55") && clean.length === 12) {
+    const ddd = clean.slice(2, 4);
+    const rest = clean.slice(4);
+    return `55${ddd}9${rest}`;
+  }
+  return clean;
+}
+
 async function sendMetaWhatsAppMessage(params: {
   to: string;
   text: string;
@@ -152,8 +163,11 @@ async function sendMetaWhatsAppMessage(params: {
 }): Promise<{ success: boolean; error?: any }> {
   const url = `https://graph.facebook.com/v21.0/${params.phoneId}/messages`;
 
-  try {
-    const res = await fetch(url, {
+  // Normaliza o número (adiciona 9 se for celular brasileiro de 12 dígitos)
+  let targetTo = formatWhatsAppRecipient(params.to);
+
+  async function postMessage(recipient: string) {
+    return await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${params.apiToken}`,
@@ -162,7 +176,7 @@ async function sendMetaWhatsAppMessage(params: {
       body: JSON.stringify({
         messaging_product: "whatsapp",
         recipient_type: "individual",
-        to: params.to,
+        to: recipient,
         type: "text",
         text: {
           preview_url: false,
@@ -170,13 +184,41 @@ async function sendMetaWhatsAppMessage(params: {
         },
       }),
     });
+  }
+
+  try {
+    let res = await postMessage(targetTo);
+    let resData = await res.json().catch(() => ({}));
+
+    // Fallback: Se a Meta rejeitar por erro 131030 (não permitido), tenta a versão alternativa (com ou sem o 9)
+    if (!res.ok && resData?.error?.code === 131030) {
+      const alternateTo =
+        targetTo.length === 13 && targetTo.startsWith("55")
+          ? `55${targetTo.slice(2, 4)}${targetTo.slice(5)}` // sem o 9
+          : formatWhatsAppRecipient(targetTo); // com o 9
+
+      if (alternateTo !== targetTo) {
+        console.log(
+          `[WhatsApp Webhook] Tentando envio para formato alternativo: +${alternateTo}...`
+        );
+        const retryRes = await postMessage(alternateTo);
+        const retryData = await retryRes.json().catch(() => ({}));
+
+        if (retryRes.ok) {
+          console.log(
+            `[Meta API Send Success] Mensagem enviada com sucesso no formato alternativo para ${alternateTo}`
+          );
+          return { success: true };
+        }
+        resData = retryData;
+      }
+    }
 
     if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      console.error("[Meta API Send Error]:", JSON.stringify(errData, null, 2));
-      return { success: false, error: errData };
+      console.error("[Meta API Send Error]:", JSON.stringify(resData, null, 2));
+      return { success: false, error: resData };
     } else {
-      console.log(`[Meta API Send Success] Mensagem enviada para ${params.to}`);
+      console.log(`[Meta API Send Success] Mensagem enviada para ${targetTo}`);
       return { success: true };
     }
   } catch (err: any) {
