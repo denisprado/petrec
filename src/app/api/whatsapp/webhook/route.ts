@@ -85,7 +85,12 @@ export async function POST(request: Request) {
               // Despachar a resposta de volta ao WhatsApp do usuário via Meta Cloud API
               const apiToken =
                 process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
-              const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+              const phoneId =
+                value?.metadata?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+              console.log(
+                `[WhatsApp Outbound] Usando Phone ID: ${phoneId} (metadata: ${value?.metadata?.phone_number_id}, env: ${process.env.WHATSAPP_PHONE_NUMBER_ID})`
+              );
 
               let sendStatus = "SUCCESS";
               let sendError: string | undefined = undefined;
