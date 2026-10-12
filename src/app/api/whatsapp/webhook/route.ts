@@ -219,6 +219,42 @@ async function sendMetaWhatsAppMessage(params: {
       }
     }
 
+    // Fallback: Se a Meta rejeitar por erro 131037 (nome de exibição não aprovado no novo número), tenta pelo número pré-aprovado
+    if (!res.ok && resData?.error?.code === 131037) {
+      const fallbackPhoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+      if (fallbackPhoneId && fallbackPhoneId !== params.phoneId) {
+        console.log(
+          `[WhatsApp Webhook] Erro 131037 (display name pendente em ${params.phoneId}). Tentando fallback pelo número pré-aprovado ${fallbackPhoneId}...`
+        );
+        const fallbackUrl = `https://graph.facebook.com/v21.0/${fallbackPhoneId}/messages`;
+        const retryRes = await fetch(fallbackUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${params.apiToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: targetTo,
+            type: "text",
+            text: {
+              preview_url: false,
+              body: params.text,
+            },
+          }),
+        });
+        const retryData = await retryRes.json().catch(() => ({}));
+        if (retryRes.ok) {
+          console.log(
+            `[Meta API Send Success] Mensagem enviada via fallback pré-aprovado (${fallbackPhoneId}) para ${targetTo}`
+          );
+          return { success: true };
+        }
+        resData = retryData;
+      }
+    }
+
     if (!res.ok) {
       console.error("[Meta API Send Error]:", JSON.stringify(resData, null, 2));
       return { success: false, error: resData };
