@@ -72,6 +72,7 @@ export function PetModal({
   const [color, setColor] = useState("");
   const [microchip, setMicrochip] = useState("");
   const [notes, setNotes] = useState("");
+  const [routineMode, setRoutineMode] = useState("automatic_by_exception");
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -93,6 +94,7 @@ export function PetModal({
       setColor(initialData.color || "");
       setMicrochip(initialData.microchip || "");
       setNotes(initialData.notes || "");
+      setRoutineMode(initialData.routineMode || "manual");
     } else {
       setName("");
       setSpecies("Cão");
@@ -104,6 +106,7 @@ export function PetModal({
       setColor("");
       setMicrochip("");
       setNotes("");
+      setRoutineMode("automatic_by_exception");
     }
     setErrorMsg(null);
     setShowDeleteConfirm(false);
@@ -138,6 +141,7 @@ export function PetModal({
           color: color.trim() || undefined,
           microchip: microchip.trim() || undefined,
           notes: notes.trim() || undefined,
+          routineMode: routineMode || undefined,
           userEmail: currentUser?.email,
         });
 
@@ -162,6 +166,7 @@ export function PetModal({
           color: color.trim() || undefined,
           microchip: microchip.trim() || undefined,
           notes: notes.trim() || undefined,
+          routineMode: routineMode || undefined,
         });
 
         triggerRefresh();
@@ -400,6 +405,73 @@ export function PetModal({
               onChange={(e) => setNotes(e.target.value)}
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
             />
+          </div>
+
+          {/* Configuração de Rotina & Estoque */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+              <Sparkles className="w-4 h-4 text-emerald-600" />
+              <span>Modo de Rotina e Consumo de Estoque</span>
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Defina como o PetRec deduz o estoque de ração e controla remédios:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <label
+                className={`p-2.5 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                  routineMode === "automatic_by_exception"
+                    ? "border-emerald-500 bg-emerald-50/80 ring-2 ring-emerald-500/20"
+                    : "border-slate-200 bg-white hover:bg-slate-100/70"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="routineMode"
+                    value="automatic_by_exception"
+                    checked={routineMode === "automatic_by_exception"}
+                    onChange={(e) => setRoutineMode(e.target.value)}
+                    className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">
+                      🔄 Por Exceção (Regular)
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5 leading-normal">
+                      Assume que ração e remédios são dados regularmente. O estoque diminui automaticamente. Você só registra quando <strong>NÃO</strong> der (jejum, dose pulada).
+                    </div>
+                  </div>
+                </div>
+              </label>
+
+              <label
+                className={`p-2.5 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                  routineMode === "manual"
+                    ? "border-emerald-500 bg-emerald-50/80 ring-2 ring-emerald-500/20"
+                    : "border-slate-200 bg-white hover:bg-slate-100/70"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="routineMode"
+                    value="manual"
+                    checked={routineMode === "manual"}
+                    onChange={(e) => setRoutineMode(e.target.value)}
+                    className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">
+                      ✍️ Manual (Confirmação)
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5 leading-normal">
+                      Exige registro ativo a cada refeição dada ou dose administrada para deduzir do estoque.
+                    </div>
+                  </div>
+                </div>
+              </label>
+            </div>
           </div>
 
           {/* Botões de Ação */}

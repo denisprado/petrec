@@ -19,6 +19,7 @@ import {
   Edit2,
   Trash2,
   X,
+  Sparkles,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -38,10 +39,11 @@ export default function EstoquePage() {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
 
-  // Modal / Form de Transação (Consumo / Entrada / Ajuste)
+  // Modal / Form de Transação (Consumo / Entrada / Ajuste / Exceção)
+  const [routineMode, setRoutineMode] = useState<string>("automatic_by_exception");
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [transactionType, setTransactionType] = useState<
-    "consumption" | "purchase" | "adjustment"
+    "consumption" | "purchase" | "adjustment" | "routine_exception"
   >("consumption");
   const [transQuantity, setTransQuantity] = useState<string>("");
   const [transNotes, setTransNotes] = useState<string>("");
@@ -88,14 +90,23 @@ export default function EstoquePage() {
 
       setLoading(true);
       try {
-        const res = await fetch(`/api/inventory?petId=${petIdToFetch}`);
-        if (res.ok) {
-          const data = await res.json();
+        const [invRes, dashRes] = await Promise.all([
+          fetch(`/api/inventory?petId=${petIdToFetch}`),
+          fetch(`/api/dashboard?petId=${petIdToFetch}`),
+        ]);
+        if (invRes.ok) {
+          const data = await invRes.json();
           if (!isCancelled) {
             setItems(data.items || []);
             if (!activePetId && petIdToFetch) {
               setActivePetId(petIdToFetch);
             }
+          }
+        }
+        if (dashRes.ok) {
+          const dashData = await dashRes.json();
+          if (!isCancelled && dashData.activePet?.routineMode) {
+            setRoutineMode(dashData.activePet.routineMode);
           }
         }
       } catch (err) {
@@ -114,27 +125,73 @@ export default function EstoquePage() {
     };
   }, [activePetId, pets, refreshTrigger]);
 
+  const handleToggleRoutineMode = async (newMode: "manual" | "automatic_by_exception") => {
+    const petId = activePetId || pets[0]?.id;
+    if (!petId) return;
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_routine_mode",
+          petId,
+          routineMode: newMode,
+          userId: currentUser.id,
+        }),
+      });
+      if (res.ok) {
+        setRoutineMode(newMode);
+        setFeedback(
+          newMode === "automatic_by_exception"
+            ? "🔄 Modo por Exceção Ativado! Rações e remédios são consumidos automaticamente."
+            : "✍️ Modo Manual Ativado! Estoque deduzido apenas quando você confirmar."
+        );
+        setTimeout(() => setFeedback(null), 3500);
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleTransactionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedItem || !transQuantity) return;
 
     setIsSubmitting(true);
     try {
+      let body: any = {
+        inventoryItemId: selectedItem.id,
+        type: transactionType,
+        quantity: parseFloat(transQuantity),
+        notes: transNotes,
+        userId: currentUser.id,
+        petId: activePetId,
+      };
+
+      if (transactionType === "routine_exception") {
+        body = {
+          action: "feeding_exception",
+          inventoryItemId: selectedItem.id,
+          quantityNotConsumed: parseFloat(transQuantity),
+          reason: transNotes || "Exceção de alimentação (Jejum / Sobrou ração)",
+          userId: currentUser.id,
+          petId: activePetId,
+        };
+      }
+
       const res = await fetch("/api/inventory", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          inventoryItemId: selectedItem.id,
-          type: transactionType,
-          quantity: parseFloat(transQuantity),
-          notes: transNotes,
-          userId: currentUser.id,
-          petId: activePetId,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (res.ok) {
-        setFeedback("✓ Transação registrada e previsão recalculada com sucesso!");
+        setFeedback(
+          transactionType === "routine_exception"
+            ? "✓ Exceção de alimentação registrada! Quantidade mantida no estoque."
+            : "✓ Transação registrada e previsão recalculada com sucesso!"
+        );
         setTimeout(() => setFeedback(null), 3500);
         setSelectedItem(null);
         setTransQuantity("");
@@ -306,6 +363,84 @@ export default function EstoquePage() {
           <Plus className="w-4 h-4" />
           <span>Cadastrar Item / Ração</span>
         </button>
+      </div>
+
+      {/* Banner de Modo de Rotina e Consumo de Estoque */}
+      <div
+        className={`rounded-2xl p-4 sm:p-5 border transition-all ${
+          routineMode === "automatic_by_exception"
+            ? "bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border-emerald-200"
+            : "bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 border-amber-200"
+        }`}
+      >
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div
+              className={`p-2.5 rounded-xl ${
+                routineMode === "automatic_by_exception"
+                  ? "bg-emerald-600 text-white shadow-xs"
+                  : "bg-amber-600 text-white shadow-xs"
+              }`}
+            >
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-sm text-slate-900">
+                  {routineMode === "automatic_by_exception"
+                    ? "🔄 Modo por Exceção Ativo (Rotina Regular)"
+                    : "✍️ Modo Manual Ativo (Confirmação Pontual)"}
+                </h3>
+                <span
+                  className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-full ${
+                    routineMode === "automatic_by_exception"
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {routineMode === "automatic_by_exception"
+                    ? "Automático por Tempo"
+                    : "Manual"}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-1 max-w-2xl leading-relaxed">
+                {routineMode === "automatic_by_exception" ? (
+                  <>
+                    A alimentação e medicamentos são deduzidos automaticamente pelo consumo diário previsto. Registros só são necessários quando houver <strong>exceções</strong> (jejum, sobras de ração ou doses não administradas).
+                  </>
+                ) : (
+                  <>
+                    O estoque só é reduzido quando você clica em confirmar cada refeição ou medicamento manualmente.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+            <button
+              type="button"
+              onClick={() =>
+                handleToggleRoutineMode(
+                  routineMode === "automatic_by_exception"
+                    ? "manual"
+                    : "automatic_by_exception"
+                )
+              }
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer ${
+                routineMode === "automatic_by_exception"
+                  ? "bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
+                  : "bg-emerald-600 hover:bg-emerald-700 text-white"
+              }`}
+            >
+              {routineMode === "automatic_by_exception" ? (
+                <span>Alternar para Modo Manual</span>
+              ) : (
+                <span>Ativar Modo por Exceção (Regular)</span>
+              )}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Regra de Ouro Explicativa Banner */}
@@ -544,25 +679,36 @@ export default function EstoquePage() {
                   <label className="text-xs font-bold text-slate-700 block mb-1.5">
                     Tipo da Transação
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <button
                       type="button"
                       onClick={() => setTransactionType("consumption")}
-                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                      className={`py-2 px-2 text-xs font-bold rounded-xl border transition cursor-pointer text-center ${
                         transactionType === "consumption"
                           ? "bg-slate-900 text-white border-slate-900"
-                          : "bg-slate-50 text-slate-700 border-slate-200"
+                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
                       }`}
                     >
-                      Consumo
+                      Consumo Extra
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTransactionType("routine_exception")}
+                      className={`py-2 px-2 text-xs font-bold rounded-xl border transition cursor-pointer text-center ${
+                        transactionType === "routine_exception"
+                          ? "bg-rose-600 text-white border-rose-600 shadow-xs"
+                          : "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+                      }`}
+                    >
+                      ⚠️ Exceção / Jejum
                     </button>
                     <button
                       type="button"
                       onClick={() => setTransactionType("purchase")}
-                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                      className={`py-2 px-2 text-xs font-bold rounded-xl border transition cursor-pointer text-center ${
                         transactionType === "purchase"
                           ? "bg-emerald-600 text-white border-emerald-600"
-                          : "bg-slate-50 text-slate-700 border-slate-200"
+                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
                       }`}
                     >
                       Entrada
@@ -570,15 +716,20 @@ export default function EstoquePage() {
                     <button
                       type="button"
                       onClick={() => setTransactionType("adjustment")}
-                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                      className={`py-2 px-2 text-xs font-bold rounded-xl border transition cursor-pointer text-center ${
                         transactionType === "adjustment"
                           ? "bg-amber-600 text-white border-amber-600"
-                          : "bg-slate-50 text-slate-700 border-slate-200"
+                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
                       }`}
                     >
                       Ajuste Físico
                     </button>
                   </div>
+                  {transactionType === "routine_exception" && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl mt-2 text-xs text-rose-800">
+                      <strong>💡 Registro de Exceção:</strong> Informe a quantidade que o pet <strong>deixou de comer</strong> (ex: sobrou no prato ou dia de jejum). Essa quantidade será mantida/creditada no estoque para não ser deduzida indevidamente pela rotina.
+                    </div>
+                  )}
                 </div>
 
                 {/* Quantidade */}

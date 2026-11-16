@@ -602,3 +602,101 @@ export const recordPurchase = mutation({
     });
   },
 });
+
+export const recordFeedingException = mutation({
+  args: {
+    inventoryItemId: v.id("inventoryItems"),
+    quantityNotConsumed: v.number(),
+    reason: v.string(), // "Jejum para exames", "Comeu menos", "Sobrou no pote", etc.
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const item = await ctx.db.get(args.inventoryItemId);
+    if (!item) throw new Error("Item de estoque não encontrado");
+
+    const newQty = item.currentQuantity + args.quantityNotConsumed;
+    await ctx.db.patch(args.inventoryItemId, { currentQuantity: newQty });
+
+    const now = new Date().toISOString();
+    await ctx.db.insert("inventoryTransactions", {
+      inventoryItemId: args.inventoryItemId,
+      type: "routine_exception",
+      quantity: args.quantityNotConsumed,
+      date: now,
+      userId: args.userId,
+      notes: `Exceção de alimentação: ${args.reason} (+${args.quantityNotConsumed} ${item.unit} preservados no estoque)`,
+    });
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: item.petId,
+        userId: args.userId,
+        action: `registrou exceção em ${item.name}: ${args.reason} (+${args.quantityNotConsumed} ${item.unit})`,
+        entityType: "inventory",
+        entityId: args.inventoryItemId,
+      });
+    }
+
+    return await ctx.db.get(args.inventoryItemId);
+  },
+});
+
+export const syncRoutineConsumption = mutation({
+  args: {
+    petId: v.id("pets"),
+    nowIso: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const pet = await ctx.db.get(args.petId);
+    if (!pet || pet.routineMode !== "automatic_by_exception") {
+      return { synced: false, reason: "not_in_automatic_mode" };
+    }
+
+    const items = await ctx.db
+      .query("inventoryItems")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+
+    const now = args.nowIso ? new Date(args.nowIso) : new Date();
+    const todayDateStr = now.toISOString().split("T")[0];
+    let totalDeductions = 0;
+
+    for (const item of items) {
+      if (item.medicationId) continue;
+      if (!item.dailyConsumption || item.dailyConsumption <= 0) continue;
+
+      const baseDateStr = item.lastRoutineSyncDate || item.referenceDate;
+      const baseDate = new Date(baseDateStr);
+      const baseDayStr = baseDate.toISOString().split("T")[0];
+
+      if (todayDateStr <= baseDayStr) {
+        continue;
+      }
+
+      const diffMs = now.getTime() - baseDate.getTime();
+      const elapsedDays = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+
+      if (elapsedDays >= 1) {
+        const consumed = elapsedDays * item.dailyConsumption;
+        const newQty = Math.max(0, item.currentQuantity - consumed);
+
+        await ctx.db.patch(item._id, {
+          currentQuantity: newQty,
+          lastRoutineSyncDate: now.toISOString(),
+        });
+
+        await ctx.db.insert("inventoryTransactions", {
+          inventoryItemId: item._id,
+          type: "routine_auto",
+          quantity: -consumed,
+          date: now.toISOString(),
+          notes: `Consumo regular diário automático (${elapsedDays} dia(s) a ${item.dailyConsumption} ${item.unit}/dia)`,
+        });
+
+        totalDeductions++;
+      }
+    }
+
+    return { synced: true, deductionsCount: totalDeductions };
+  },
+});

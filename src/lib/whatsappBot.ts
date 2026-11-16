@@ -232,7 +232,90 @@ export async function processWhatsAppMessage(
     };
   }
 
-  // 4. Reconhecimento Direto de Linguagem Natural: "alimentei 250g", "dei 300g", etc.
+  // 4a. Reconhecimento Direto de Exceção de Alimentação (Jejum / Sobrou ração / Não comeu)
+  const exceptionFeedingMatch =
+    text.match(/(?:nao|não)\s+(?:dei|comeu|alimentei|dei\s+a)\s+(?:racao|ração|comida)/i) ||
+    text.match(/(?:jejum|sobrou\s+racao|sobrou\s+ração|sobrou\s+comida|recusou\s+a\s+comida|nao\s+quis\s+comer|não\s+quis\s+comer)/i);
+
+  if (exceptionFeedingMatch) {
+    const qtyMatch = text.match(/(\d+)\s*(?:g|gramas)?/i);
+    const inv = await convex.query(api.inventory.listByPet, {
+      petId: currentPet._id,
+    });
+    const racao = inv.find((i: any) => i.category === "racao") || inv[0];
+
+    if (racao) {
+      const doseNotEaten = qtyMatch
+        ? parseInt(qtyMatch[1])
+        : racao.dailyConsumption
+        ? Math.round(racao.dailyConsumption / 2)
+        : 200;
+
+      await convex.mutation(api.inventory.recordFeedingException, {
+        inventoryItemId: racao._id,
+        quantityNotConsumed: doseNotEaten,
+        reason: `Exceção informada via WhatsApp: "${text}"`,
+        userId: user._id,
+      });
+
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: `🥣 *Exceção de Refeição Registrada!*\n\nRegistrado que *${currentPet.name}* *NÃO* consumiu *${doseNotEaten} ${racao.unit}* de *${racao.name}*.\n\n🛡️ Quantidade preservada no estoque do PetRec para não ser debitada indevidamente pela rotina!`,
+        actionTaken: "feeding_exception_recorded",
+        currentState: "IDLE",
+      };
+    }
+  }
+
+  // 4b. Reconhecimento Direto de Exceção de Medicamento (Não dei remédio / pulei dose / vomitou remédio)
+  const exceptionMedMatch =
+    text.match(/(?:nao|não)\s+(?:dei|tomou)\s+(?:o\s+)?(?:remedio|remédio|dose)/i) ||
+    text.match(/(?:pulei|esqueci|vomitou)\s+(?:a\s+dose|o\s+remedio|o\s+remédio|de\s+dar|dose|remédio|remedio)/i);
+
+  if (exceptionMedMatch) {
+    const todayAdms = await convex.query(
+      api.medications.getAdministrationsToday,
+      {
+        petId: currentPet._id,
+      }
+    );
+
+    const targetAdm =
+      todayAdms.find((a: any) => a.status === "administered") ||
+      todayAdms.find((a: any) => a.status === "scheduled");
+
+    if (targetAdm) {
+      await convex.mutation(api.medications.administer, {
+        administrationId: targetAdm._id,
+        userId: user._id,
+        status: "skipped",
+      });
+
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: `💊 *Exceção de Medicamento Registrada!*\n\nA dose de *${targetAdm.medication?.name || "Medicamento"}* para *${currentPet.name}* foi marcada como *NÃO administrada / pulada*.\n\n🛡️ O estoque deste medicamento foi estornado no PetRec com sucesso!`,
+        actionTaken: "medication_skipped",
+        currentState: "IDLE",
+      };
+    } else {
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: `💊 Nenhuma dose pendente ou administrada hoje foi encontrada para estornar em *${currentPet.name}*.`,
+        currentState: "IDLE",
+      };
+    }
+  }
+
+  // 4c. Reconhecimento Direto de Linguagem Natural: "alimentei 250g", "dei 300g", etc.
   const naturalFeedingMatch = text.match(
     /(?:alimentei|dei|comeu|coloquei|racao|ração)\s+(\d+)\s*(?:g|gramas)?/i
   );
@@ -308,22 +391,41 @@ export async function processWhatsAppMessage(
       currentPetId: currentPet._id,
       state: "IDLE",
     });
+
+    const isRoutineAuto = currentPet.routineMode !== "manual";
+    const routineBadge = isRoutineAuto
+      ? "🔄 *Modo por Exceção Ativo*"
+      : "✍️ *Modo Manual Ativo*";
+
     return {
       success: true,
       senderPhone: cleanPhone,
       userFound: true,
       userName: user.name,
       replyText:
-        `🐾 *Menu PetRec — ${currentPet.name}*\n\n` +
+        `🐾 *Menu PetRec — ${currentPet.name}*\n` +
+        `Status: ${routineBadge}\n\n` +
         `1️⃣ *Hoje* — Medicamentos e rotina do dia\n` +
         `2️⃣ *Estoque* — Nível de ração e previsão de compra\n` +
-        `3️⃣ *Remédio* — Confirmar administração de dose\n` +
-        `4️⃣ *Refeição* — Registrar ração dada\n` +
+        `3️⃣ *Remédio* — ${
+          isRoutineAuto
+            ? "Registrar Exceção / Pular dose (não dei)"
+            : "Confirmar administração de dose"
+        }\n` +
+        `4️⃣ *Refeição* — ${
+          isRoutineAuto
+            ? "Registrar Exceção / Jejum (não comeu)"
+            : "Registrar ração dada"
+        }\n` +
         `5️⃣ *Vacinas* — Próximos reforços e imunização\n` +
         `6️⃣ *Compras* — Lista de itens para comprar\n` +
         `7️⃣ *Peso* — Consultar ou registrar peso\n` +
         `8️⃣ *Prontuário* — Histórico clínico e consultas\n\n` +
-        `💡 _Responda com o número ou envie frases naturais como "alimentei 200g" ou "pesei 18.5kg"!_`,
+        `💡 _Responda com o número ou envie frases naturais como ${
+          isRoutineAuto
+            ? '"não dei remédio", "jejum"'
+            : '"alimentei 200g"'
+        } ou "pesei 18.5kg"!_`,
       currentState: "IDLE",
     };
   }
@@ -390,43 +492,77 @@ export async function processWhatsAppMessage(
   // 8. COMANDO 3 / Remédio
   if (
     lower === "3" ||
+    lower === "remedio" ||
+    lower === "remédio" ||
     lower.includes("remédio") ||
     lower.includes("remedio") ||
     lower.includes("dose")
   ) {
+    const isRoutineAuto = currentPet.routineMode !== "manual";
     const todayAdms = await convex.query(
       api.medications.getAdministrationsToday,
       {
         petId: currentPet._id,
       }
     );
-    const pending = todayAdms.find((a: any) => a.status === "scheduled");
 
-    if (pending) {
-      await convex.mutation(api.medications.administer, {
-        administrationId: pending._id,
-        userId: user._id,
-        status: "administered",
-      });
+    if (isRoutineAuto) {
+      let reply = `💊 *Medicamentos & Rotina — ${currentPet.name}*\n`;
+      reply += `_(🔄 Modo por Exceção: doses são baixadas automaticamente pelo horário)_\n\n`;
+
+      if (!todayAdms || todayAdms.length === 0) {
+        reply += `Nenhum medicamento agendado para hoje.`;
+      } else {
+        reply += `*Doses de hoje:*\n`;
+        for (const a of todayAdms) {
+          const icon =
+            a.status === "administered"
+              ? "✅ Assumido como dado"
+              : a.status === "skipped"
+              ? "❌ Pulado (estornado)"
+              : "⏰ Agendado";
+          reply += `• *${a.medication?.name || "Medicamento"}*: ${icon}\n`;
+        }
+        reply += `\n⚠️ *Para registrar que NÃO deu uma dose ou o pet vomitou:*\nEnvie *"não dei remédio"* ou *"pulei dose"*. O estoque de farmácia será estornado no PetRec!`;
+      }
 
       return {
         success: true,
         senderPhone: cleanPhone,
         userFound: true,
         userName: user.name,
-        replyText: `💊 *Medicamento Registrado!*\n\nDose de *${pending.medication?.name || "Medicamento"}* para *${currentPet.name}* marcada como administrada!`,
-        actionTaken: "medication_administered",
+        replyText: reply,
         currentState: "IDLE",
       };
     } else {
-      return {
-        success: true,
-        senderPhone: cleanPhone,
-        userFound: true,
-        userName: user.name,
-        replyText: `💊 Nenhum medicamento agendado pendente no momento para *${currentPet.name}*.`,
-        currentState: "IDLE",
-      };
+      const pending = todayAdms.find((a: any) => a.status === "scheduled");
+
+      if (pending) {
+        await convex.mutation(api.medications.administer, {
+          administrationId: pending._id,
+          userId: user._id,
+          status: "administered",
+        });
+
+        return {
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: user.name,
+          replyText: `💊 *Medicamento Registrado!*\n\nDose de *${pending.medication?.name || "Medicamento"}* para *${currentPet.name}* marcada como administrada!`,
+          actionTaken: "medication_administered",
+          currentState: "IDLE",
+        };
+      } else {
+        return {
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: user.name,
+          replyText: `💊 Nenhum medicamento agendado pendente no momento para *${currentPet.name}*.`,
+          currentState: "IDLE",
+        };
+      }
     }
   }
 
@@ -438,12 +574,39 @@ export async function processWhatsAppMessage(
     lower.includes("refeição") ||
     lower.includes("refeicao")
   ) {
+    const isRoutineAuto = currentPet.routineMode !== "manual";
     const inv = await convex.query(api.inventory.listByPet, {
       petId: currentPet._id,
     });
     const racao = inv.find((i: any) => i.category === "racao") || inv[0];
 
-    if (racao) {
+    if (!racao) {
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText:
+          "Nenhuma ração cadastrada no estoque deste pet. Cadastre no app para controlar refeições!",
+        currentState: "IDLE",
+      };
+    }
+
+    if (isRoutineAuto) {
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText:
+          `🥣 *Alimentação Regular — ${currentPet.name}:*\n` +
+          `_(🔄 Modo por Exceção Ativo)_\n\n` +
+          `A ração é deduzida automaticamente todo dia conforme o consumo diário de *${racao.dailyConsumption} ${racao.unit}/dia* de *${racao.name}*.\n\n` +
+          `⚠️ *Se o pet ficou em jejum ou sobrou comida no comedouro:*\n` +
+          `Envie *"jejum"*, *"não dei ração"* ou *"sobrou 150g"*. Essa quantidade será preservada/creditada no estoque!`,
+        currentState: "IDLE",
+      };
+    } else {
       const dose = racao.dailyConsumption
         ? Math.round(racao.dailyConsumption / 2)
         : 200;
@@ -461,16 +624,6 @@ export async function processWhatsAppMessage(
         userName: user.name,
         replyText: `🥣 *Refeição registrada!*\n\nVocê registrou *${dose} ${racao.unit}* de *${racao.name}* para *${currentPet.name}*.\nEstoque atualizado automaticamente no PetRec!`,
         actionTaken: "consumption_recorded",
-        currentState: "IDLE",
-      };
-    } else {
-      return {
-        success: true,
-        senderPhone: cleanPhone,
-        userFound: true,
-        userName: user.name,
-        replyText:
-          "Nenhuma ração cadastrada no estoque deste pet. Cadastre no app para controlar refeições!",
         currentState: "IDLE",
       };
     }

@@ -40,6 +40,16 @@ export async function GET(request: Request) {
     const activePetBasic = (petId ? allPets.find((p) => p._id === petId) : null) || allPets[0];
     const activePetId = activePetBasic._id;
 
+    // Sincronizar rotinas e administrações de hoje
+    try {
+      await convex.mutation(api.medications.syncRoutineMedications, { petId: activePetId });
+      if ((activePetBasic as any).routineMode === "automatic_by_exception") {
+        await convex.mutation(api.inventory.syncRoutineConsumption, { petId: activePetId });
+      }
+    } catch (syncErr) {
+      console.warn("[Dashboard API] Aviso ao sincronizar rotina:", syncErr);
+    }
+
     const [
       activePetWithMembers,
       inventoryItems,
@@ -127,6 +137,7 @@ export async function GET(request: Request) {
         ...activePetWithMembers,
         id: activePetWithMembers?._id || activePetId,
         members: (activePetWithMembers as any)?.members || [],
+        routineMode: (activePetWithMembers as any)?.routineMode || (activePetBasic as any)?.routineMode || "manual",
       },
       pets: multiPetStatus,
       today: {

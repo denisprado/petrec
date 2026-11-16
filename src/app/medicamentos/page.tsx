@@ -15,6 +15,7 @@ import {
   Trash2,
   AlertTriangle,
   Package,
+  Sparkles,
 } from "lucide-react";
 import { format, isValid } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -38,6 +39,7 @@ export default function MedicamentosPage() {
   const [administrations, setAdministrations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [routineMode, setRoutineMode] = useState<string>("automatic_by_exception");
 
   // Modal de criação / edição
   const [modalOpen, setModalOpen] = useState(false);
@@ -60,15 +62,24 @@ export default function MedicamentosPage() {
 
       setLoading(true);
       try {
-        const res = await fetch(`/api/medications?petId=${petIdToFetch}`);
-        if (res.ok) {
-          const data = await res.json();
+        const [medRes, dashRes] = await Promise.all([
+          fetch(`/api/medications?petId=${petIdToFetch}`),
+          fetch(`/api/dashboard?petId=${petIdToFetch}`),
+        ]);
+        if (medRes.ok) {
+          const data = await medRes.json();
           if (!isCancelled) {
             setMedications(data.medications || []);
             setAdministrations(data.administrationsToday || []);
             if (!activePetId && petIdToFetch) {
               setActivePetId(petIdToFetch);
             }
+          }
+        }
+        if (dashRes.ok) {
+          const dashData = await dashRes.json();
+          if (!isCancelled && dashData.activePet?.routineMode) {
+            setRoutineMode(dashData.activePet.routineMode);
           }
         }
       } catch (err) {
@@ -86,6 +97,35 @@ export default function MedicamentosPage() {
       isCancelled = true;
     };
   }, [activePetId, pets, refreshTrigger]);
+
+  const handleToggleRoutineMode = async (newMode: "manual" | "automatic_by_exception") => {
+    const petId = activePetId || pets[0]?.id;
+    if (!petId) return;
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_routine_mode",
+          petId,
+          routineMode: newMode,
+          userId: currentUser.id,
+        }),
+      });
+      if (res.ok) {
+        setRoutineMode(newMode);
+        setFeedback(
+          newMode === "automatic_by_exception"
+            ? "🔄 Modo por Exceção Ativado! Doses agendadas são administradas automaticamente."
+            : "✍️ Modo Manual Ativado! Doses debitadas apenas quando confirmadas."
+        );
+        setTimeout(() => setFeedback(null), 3500);
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const handleAdminister = async (
     administrationId: string,
@@ -106,6 +146,8 @@ export default function MedicamentosPage() {
         setFeedback(
           status === "administered"
             ? `✓ Medicamento administrado e registrado por ${currentUser.name.split(" ")[0]}!`
+            : status === "skipped"
+            ? "✓ Dose marcada como pulada (estoque de medicamento estornado com sucesso)!"
             : "Registro atualizado."
         );
         setTimeout(() => setFeedback(null), 3500);
@@ -174,6 +216,84 @@ export default function MedicamentosPage() {
             <span>Novo Medicamento</span>
           </button>
         )}
+      </div>
+
+      {/* Banner de Modo de Rotina e Consumo de Medicamentos */}
+      <div
+        className={`rounded-2xl p-4 sm:p-5 border transition-all ${
+          routineMode === "automatic_by_exception"
+            ? "bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border-emerald-200"
+            : "bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 border-amber-200"
+        }`}
+      >
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div
+              className={`p-2.5 rounded-xl ${
+                routineMode === "automatic_by_exception"
+                  ? "bg-emerald-600 text-white shadow-xs"
+                  : "bg-amber-600 text-white shadow-xs"
+              }`}
+            >
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-sm text-slate-900">
+                  {routineMode === "automatic_by_exception"
+                    ? "🔄 Modo por Exceção Ativo (Doses Assumidas Regulares)"
+                    : "✍️ Modo Manual Ativo (Confirmação Pontual)"}
+                </h3>
+                <span
+                  className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-full ${
+                    routineMode === "automatic_by_exception"
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {routineMode === "automatic_by_exception"
+                    ? "Baixa Automática no Horário"
+                    : "Baixa Manual"}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-1 max-w-2xl leading-relaxed">
+                {routineMode === "automatic_by_exception" ? (
+                  <>
+                    Os medicamentos são considerados administrados conforme os horários agendados e abatidos do estoque de farmácia. Caso você <strong>não tenha dado</strong> a dose (ou o pet vomitou), basta clicar em <em>"Não dei / Pular"</em> para registrar a exceção e estornar o medicamento de volta ao estoque.
+                  </>
+                ) : (
+                  <>
+                    As doses agendadas só são consideradas administradas e debitadas do estoque quando você clica em confirmar manualmente.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+            <button
+              type="button"
+              onClick={() =>
+                handleToggleRoutineMode(
+                  routineMode === "automatic_by_exception"
+                    ? "manual"
+                    : "automatic_by_exception"
+                )
+              }
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer ${
+                routineMode === "automatic_by_exception"
+                  ? "bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
+                  : "bg-emerald-600 hover:bg-emerald-700 text-white"
+              }`}
+            >
+              {routineMode === "automatic_by_exception" ? (
+                <span>Alternar para Modo Manual</span>
+              ) : (
+                <span>Ativar Modo por Exceção (Regular)</span>
+              )}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Seção 1: Programação de Hoje (Administrações) */}
@@ -268,23 +388,45 @@ export default function MedicamentosPage() {
                   </div>
 
                   {/* Ações de Administração */}
-                  <div className="flex items-center gap-2 self-end sm:self-center">
-                    {!isDone && permissions.canAdministerMedications && (
-                      <>
-                        <button
-                          onClick={() => handleAdminister(adm.id, "administered")}
-                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Marcar Administrado</span>
-                        </button>
+                  <div className="flex items-center gap-2 self-end sm:self-center flex-wrap">
+                    {!isDone ? (
+                      permissions.canAdministerMedications && (
+                        <>
+                          <button
+                            onClick={() => handleAdminister(adm.id, "administered")}
+                            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Marcar Administrado</span>
+                          </button>
+                          <button
+                            onClick={() => handleAdminister(adm.id, "skipped")}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer"
+                          >
+                            Pular
+                          </button>
+                        </>
+                      )
+                    ) : (
+                      permissions.canAdministerMedications && (
                         <button
                           onClick={() => handleAdminister(adm.id, "skipped")}
-                          className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer"
+                          className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl border border-rose-200 transition flex items-center gap-1.5 cursor-pointer"
+                          title="Registrar que não deu esta dose (estorna o estoque)"
                         >
-                          Pular
+                          <span>❌ Não dei / Pular (Estornar)</span>
                         </button>
-                      </>
+                      )
+                    )}
+                    {isSkipped && permissions.canAdministerMedications && (
+                      <button
+                        onClick={() => handleAdminister(adm.id, "administered")}
+                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl border border-emerald-200 transition flex items-center gap-1.5 cursor-pointer"
+                        title="Reverter e marcar como administrado"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Reverter para Administrado</span>
+                      </button>
                     )}
                   </div>
                 </div>

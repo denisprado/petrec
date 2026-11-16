@@ -434,21 +434,23 @@ export const administer = mutation({
     const adm = await ctx.db.get(args.administrationId);
     if (!adm) throw new Error("Administração não encontrada");
 
+    const previousStatus = adm.status;
     const now = new Date();
 
     await ctx.db.patch(args.administrationId, {
       status: args.status,
       administeredAt: args.status === "administered" ? now.toISOString() : undefined,
       administeredByUserId: args.status === "administered" ? args.userId : undefined,
-      notes: args.notes,
+      notes: args.notes || (args.status === "skipped" ? "Dose pulada / Não administrada (Exceção)" : undefined),
     });
 
-    if (args.status === "administered") {
-      const inv = await ctx.db
-        .query("inventoryItems")
-        .withIndex("by_medication", (q) => q.eq("medicationId", adm.medicationId))
-        .first();
+    const inv = await ctx.db
+      .query("inventoryItems")
+      .withIndex("by_medication", (q) => q.eq("medicationId", adm.medicationId))
+      .first();
 
+    // 1. Se tornou administrado (e antes não era), deduz do estoque
+    if (args.status === "administered" && previousStatus !== "administered") {
       if (inv) {
         const newQty = Math.max(0, inv.currentQuantity - adm.quantity);
         await ctx.db.patch(inv._id, { currentQuantity: newQty });
@@ -463,5 +465,120 @@ export const administer = mutation({
         });
       }
     }
+
+    // 2. Se antes era administrado e agora foi marcado como pulado / não administrado (EXCEÇÃO), devolve ao estoque!
+    if (previousStatus === "administered" && (args.status === "skipped" || args.status === "missed")) {
+      if (inv) {
+        const newQty = inv.currentQuantity + adm.quantity;
+        await ctx.db.patch(inv._id, { currentQuantity: newQty });
+
+        await ctx.db.insert("inventoryTransactions", {
+          inventoryItemId: inv._id,
+          type: "routine_exception",
+          quantity: adm.quantity,
+          date: now.toISOString(),
+          userId: args.userId,
+          notes: `Exceção de medicamento: dose pulada/não administrada (+${adm.quantity} ${inv.unit} devolvidos ao estoque)`,
+        });
+      }
+    }
+  },
+});
+
+export const syncRoutineMedications = mutation({
+  args: {
+    petId: v.id("pets"),
+    nowIso: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const pet = await ctx.db.get(args.petId);
+    if (!pet) return { success: false, reason: "pet_not_found" };
+
+    const now = args.nowIso ? new Date(args.nowIso) : new Date();
+    const todayDateStr = now.toISOString().split("T")[0];
+
+    // 1. Buscar medicamentos ativos
+    const meds = await ctx.db
+      .query("medications")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+
+    const activeMeds = meds.filter((m) => m.status === "active");
+
+    // 2. Garantir que as administrações de hoje existam para cada medicamento
+    for (const med of activeMeds) {
+      const schedule = await ctx.db
+        .query("medicationSchedules")
+        .withIndex("by_medication", (q) => q.eq("medicationId", med._id))
+        .first();
+
+      if (!schedule || !schedule.active) continue;
+
+      const existingToday = await ctx.db
+        .query("medicationAdministrations")
+        .withIndex("by_medication", (q) => q.eq("medicationId", med._id))
+        .collect();
+
+      const existingTodayForMed = existingToday.filter((a) =>
+        a.scheduledAt.startsWith(todayDateStr)
+      );
+
+      for (const timeStr of schedule.times) {
+        const scheduledIso = `${todayDateStr}T${timeStr}:00.000Z`;
+        const alreadyExists = existingTodayForMed.some((a) => a.scheduledAt === scheduledIso);
+
+        if (!alreadyExists) {
+          await ctx.db.insert("medicationAdministrations", {
+            medicationId: med._id,
+            petId: args.petId,
+            scheduledAt: scheduledIso,
+            quantity: schedule.quantityPerAdministration,
+            status: "scheduled",
+          });
+        }
+      }
+    }
+
+    // 3. Se estiver no modo por exceção, doses passadas viram administradas por rotina
+    let autoAdministeredCount = 0;
+    if (pet.routineMode === "automatic_by_exception") {
+      const admsToday = await ctx.db
+        .query("medicationAdministrations")
+        .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+        .collect();
+
+      for (const adm of admsToday) {
+        // Se ainda está scheduled e a hora prevista já passou:
+        if (adm.status === "scheduled" && new Date(adm.scheduledAt) <= now) {
+          await ctx.db.patch(adm._id, {
+            status: "administered",
+            administeredAt: adm.scheduledAt,
+            notes: "Administrado automaticamente (Rotina regular)",
+          });
+
+          const inv = await ctx.db
+            .query("inventoryItems")
+            .withIndex("by_medication", (q) => q.eq("medicationId", adm.medicationId))
+            .first();
+
+          if (inv) {
+            const newQty = Math.max(0, inv.currentQuantity - adm.quantity);
+            await ctx.db.patch(inv._id, { currentQuantity: newQty });
+
+            await ctx.db.insert("inventoryTransactions", {
+              inventoryItemId: inv._id,
+              type: "routine_auto",
+              quantity: -adm.quantity,
+              date: now.toISOString(),
+              notes: "Dose regular automática (horário atingido)",
+            });
+          }
+
+          autoAdministeredCount++;
+        }
+      }
+    }
+
+    return { success: true, autoAdministeredCount };
   },
 });

@@ -70,6 +70,7 @@ export const create = mutation({
     color: v.optional(v.string()),
     microchip: v.optional(v.string()),
     notes: v.optional(v.string()),
+    routineMode: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { userId: explicitUserId, userEmail, ...petData } = args;
@@ -146,11 +147,44 @@ export const update = mutation({
     color: v.optional(v.string()),
     microchip: v.optional(v.string()),
     notes: v.optional(v.string()),
+    routineMode: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { petId, ...updates } = args;
     await ctx.db.patch(petId, updates);
     return await ctx.db.get(petId);
+  },
+});
+
+export const setRoutineMode = mutation({
+  args: {
+    petId: v.id("pets"),
+    routineMode: v.string(), // "manual" | "automatic_by_exception"
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const pet = await ctx.db.get(args.petId);
+    if (!pet) throw new Error("Pet não encontrado");
+
+    await ctx.db.patch(args.petId, {
+      routineMode: args.routineMode,
+    });
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: args.petId,
+        userId: args.userId,
+        action: `alterou o modo de controle para: ${
+          args.routineMode === "automatic_by_exception"
+            ? "Modo por Exceção (Consumo Regular Automático)"
+            : "Modo Manual (Registro Ativo)"
+        }`,
+        entityType: "pet",
+        entityId: args.petId,
+      });
+    }
+
+    return await ctx.db.get(args.petId);
   },
 });
 

@@ -53,9 +53,13 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const {
+      action,
       inventoryItemId,
       type, // "consumption", "purchase", "adjustment", "loss", "expiration"
       quantity, // valor da transação
+      quantityNotConsumed,
+      reason,
+      routineMode,
       unitPrice,
       totalPrice,
       notes,
@@ -70,6 +74,35 @@ export async function POST(request: Request) {
       dailyConsumption,
       purchaseLeadTimeDays,
     } = body;
+
+    // Se for registrar exceção de alimentação (ex: jejum, não comeu, sobrou no pote)
+    if (action === "feeding_exception" || action === "exception") {
+      const item = await convex.mutation(api.inventory.recordFeedingException, {
+        inventoryItemId: inventoryItemId as any,
+        quantityNotConsumed: Number(quantityNotConsumed || quantity || 0),
+        reason: reason || notes || "Exceção de alimentação",
+        userId: userId ? (userId as any) : undefined,
+      });
+      return NextResponse.json({
+        success: true,
+        item,
+        message: "Exceção de alimentação registrada com sucesso!",
+      });
+    }
+
+    // Se for alteração do modo de rotina do pet (manual vs automatic_by_exception)
+    if (action === "set_routine_mode" && petId && routineMode) {
+      const pet = await convex.mutation(api.pets.setRoutineMode, {
+        petId: petId as any,
+        routineMode,
+        userId: userId ? (userId as any) : undefined,
+      });
+      return NextResponse.json({
+        success: true,
+        pet,
+        message: `Modo alterado para ${routineMode === "automatic_by_exception" ? "Modo por Exceção" : "Modo Manual"}`,
+      });
+    }
 
     // Se for criação de um novo item de estoque (ração, petisco, medicamento etc)
     if (isNewItem || (!inventoryItemId && name && petId)) {

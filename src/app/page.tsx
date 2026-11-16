@@ -22,6 +22,8 @@ import {
   Sparkles,
   Settings,
   Edit2,
+  X,
+  RotateCcw,
 } from "lucide-react";
 import Link from "next/link";
 import { format, isValid } from "date-fns";
@@ -55,6 +57,18 @@ export default function DashboardPage() {
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
   const [showNewPetModal, setShowNewPetModal] = useState(false);
   const [showEditPetModal, setShowEditPetModal] = useState(false);
+
+  // Estados de Exceção (Modo Por Exceção / Regular)
+  const [feedingExceptionModalOpen, setFeedingExceptionModalOpen] = useState(false);
+  const [selectedRacaoForException, setSelectedRacaoForException] = useState<any>(null);
+  const [exceptionGrams, setExceptionGrams] = useState<number>(200);
+  const [exceptionReason, setExceptionReason] = useState<string>("Jejum para exames");
+  const [customExceptionReason, setCustomExceptionReason] = useState<string>("");
+
+  const [skipMedModalOpen, setSkipMedModalOpen] = useState(false);
+  const [selectedAdmToSkip, setSelectedAdmToSkip] = useState<any>(null);
+  const [skipMedReason, setSkipMedReason] = useState<string>("Vomitou / recusou o medicamento");
+  const [customSkipReason, setCustomSkipReason] = useState<string>("");
 
   // Carregar dados agregados do dashboard
   useEffect(() => {
@@ -94,7 +108,11 @@ export default function DashboardPage() {
   }, [activePetId, currentUser?.id, refreshTrigger]);
 
   // Ação de administrar medicamento hoje
-  const handleAdminister = async (administrationId: string, status: "administered" | "skipped") => {
+  const handleAdminister = async (
+    administrationId: string,
+    status: "administered" | "skipped",
+    notes?: string
+  ) => {
     try {
       const res = await fetch("/api/medications", {
         method: "PATCH",
@@ -102,6 +120,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           administrationId,
           status,
+          notes,
           userId: currentUser.id,
         }),
       });
@@ -109,12 +128,94 @@ export default function DashboardPage() {
       if (res.ok) {
         setActionSuccessMessage(
           status === "administered"
-            ? `✓ Medicamento marcado como administrado por ${currentUser.name.split(" ")[0]}!`
-            : "Dose marcada como pulada."
+            ? `✓ Medicamento registrado por ${currentUser.name.split(" ")[0]}!`
+            : `⚠️ Dose marcada como pulada! Estoque de comprimidos preservado/estornado.`
         );
         setTimeout(() => setActionSuccessMessage(null), 4000);
         triggerRefresh();
       }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Alternar Modo de Rotina (Manual vs Por Exceção)
+  const handleToggleRoutineMode = async (newMode: "manual" | "automatic_by_exception") => {
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_routine_mode",
+          petId: activePetId,
+          routineMode: newMode,
+          userId: currentUser.id,
+        }),
+      });
+      if (res.ok) {
+        setActionSuccessMessage(
+          newMode === "automatic_by_exception"
+            ? "🔄 Modo por Exceção Ativado! Rações e remédios são consumidos automaticamente."
+            : "✍️ Modo Manual Ativado! Estoque deduzido apenas quando você confirmar."
+        );
+        setTimeout(() => setActionSuccessMessage(null), 4000);
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Registrar Exceção de Alimentação (não comeu / jejum)
+  const handleFeedingExceptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedRacaoForException) return;
+
+    const finalReason =
+      exceptionReason === "Outro"
+        ? customExceptionReason.trim() || "Exceção de alimentação"
+        : exceptionReason;
+
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "feeding_exception",
+          inventoryItemId: selectedRacaoForException.id || selectedRacaoForException._id,
+          quantityNotConsumed: Number(exceptionGrams),
+          reason: finalReason,
+          userId: currentUser.id,
+          petId: activePetId,
+        }),
+      });
+
+      if (res.ok) {
+        setActionSuccessMessage(
+          `⚠️ Exceção registrada: +${exceptionGrams}g de ${selectedRacaoForException.name} mantidos no estoque (${finalReason}).`
+        );
+        setTimeout(() => setActionSuccessMessage(null), 4000);
+        setFeedingExceptionModalOpen(false);
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Confirmar Pulo de Dose com Motivo
+  const handleConfirmSkipMed = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAdmToSkip) return;
+
+    const finalReason =
+      skipMedReason === "Outro"
+        ? customSkipReason.trim() || "Dose pulada pelo tutor"
+        : skipMedReason;
+
+    try {
+      await handleAdminister(selectedAdmToSkip.id, "skipped", finalReason);
+      setSkipMedModalOpen(false);
     } catch (err) {
       console.error(err);
     }
@@ -308,9 +409,34 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Tutores associados & Ação de Editar */}
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 bg-black/20 backdrop-blur-md px-3 py-2 rounded-xl border border-white/10">
+            {/* Tutores associados & Ações de Configuração */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* Botão de Troca Rápida de Modo de Rotina */}
+              <button
+                type="button"
+                onClick={() =>
+                  handleToggleRoutineMode(
+                    activePet.routineMode === "automatic_by_exception"
+                      ? "manual"
+                      : "automatic_by_exception"
+                  )
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border backdrop-blur-md flex items-center gap-1.5 shadow-xs ${
+                  activePet.routineMode === "automatic_by_exception"
+                    ? "bg-emerald-500/30 hover:bg-emerald-500/50 border-emerald-300/40 text-emerald-100"
+                    : "bg-white/15 hover:bg-white/25 border-white/20 text-white"
+                }`}
+                title="Clique para alternar entre Modo por Exceção (Automático) e Modo Manual"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-300" />
+                <span>
+                  {activePet.routineMode === "automatic_by_exception"
+                    ? "Rotina: Por Exceção"
+                    : "Rotina: Manual"}
+                </span>
+              </button>
+
+              <div className="flex items-center gap-2 bg-black/20 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10">
                 <span className="text-xs text-emerald-200 font-medium">Equipe:</span>
                 <div className="flex -space-x-2">
                   {activePet.members
@@ -331,7 +457,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setShowEditPetModal(true)}
-                  className="px-3 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl text-xs font-bold transition backdrop-blur-md border border-white/20 flex items-center gap-1.5 shadow-xs"
+                  className="px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white rounded-xl text-xs font-bold transition backdrop-blur-md border border-white/20 flex items-center gap-1.5 shadow-xs"
                   title="Editar informações cadastrais do pet"
                 >
                   <Settings className="w-3.5 h-3.5" />
@@ -341,6 +467,29 @@ export default function DashboardPage() {
             </div>
           </div>
         </section>
+      )}
+
+      {/* Banner Informativo do Modo por Exceção */}
+      {activePet?.routineMode === "automatic_by_exception" && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 sm:p-4 flex items-start sm:items-center justify-between gap-3 text-xs text-emerald-950 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="font-bold text-emerald-900">Modo por Exceção Ativo:</span>{" "}
+              <span className="text-emerald-800">
+                Rações e medicamentos são considerados consumidos regularmente conforme o cronograma. O estoque diminui automaticamente. Você só precisa registrar quando <strong>NÃO</strong> tiver dado algo (jejum, dose pulada).
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={() => handleToggleRoutineMode("manual")}
+            className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 underline shrink-0 transition"
+          >
+            Mudar para Manual
+          </button>
+        </div>
       )}
 
       {/* 🔴 SEÇÃO PRINCIPAL DE ATENÇÃO IMEDIATA (O que exige ação) */}
@@ -548,7 +697,34 @@ export default function DashboardPage() {
 
                       {/* Botões de Ação para o Tutor Logado */}
                       <div className="flex items-center gap-1.5">
-                        {!isDone && permissions.canAdministerMedications && (
+                        {isSkipped && (
+                          <span className="text-xs text-slate-500 font-semibold px-2 py-1 bg-slate-100 rounded-md">
+                            Dose Pulada (Exceção)
+                          </span>
+                        )}
+
+                        {isDone && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-emerald-700 font-bold px-2 py-1 bg-emerald-100 rounded-md">
+                              {adm.notes?.includes("Rotina regular") ? "Rotina ✓" : "Feito ✓"}
+                            </span>
+                            {activePet?.routineMode === "automatic_by_exception" && permissions.canAdministerMedications && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAdmToSkip(adm);
+                                  setSkipMedModalOpen(true);
+                                }}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
+                                title="Registrar que NÃO deu esta dose (estorna comprimido ao estoque)"
+                              >
+                                ❌ Não dei / Pular
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {!isDone && !isSkipped && permissions.canAdministerMedications && (
                           <>
                             <button
                               onClick={() => handleAdminister(adm.id, "administered")}
@@ -558,18 +734,16 @@ export default function DashboardPage() {
                               ✓ Administrar
                             </button>
                             <button
-                              onClick={() => handleAdminister(adm.id, "skipped")}
-                              className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs transition"
-                              title="Pular dose"
+                              onClick={() => {
+                                setSelectedAdmToSkip(adm);
+                                setSkipMedModalOpen(true);
+                              }}
+                              className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs transition"
+                              title="Pular dose (registrar exceção)"
                             >
                               Pular
                             </button>
                           </>
-                        )}
-                        {isDone && (
-                          <span className="text-xs text-emerald-600 font-bold px-2 py-1 bg-emerald-100 rounded-md">
-                            Feito ✓
-                          </span>
                         )}
                       </div>
                     </div>
@@ -585,7 +759,9 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2">
                 <Utensils className="w-5 h-5 text-teal-600" />
                 <h2 className="text-base font-bold text-slate-900">
-                  Alimentação Rápida — Consumo Real
+                  {activePet?.routineMode === "automatic_by_exception"
+                    ? "Alimentação — Rotina Regular Automática"
+                    : "Alimentação Rápida — Consumo Real"}
                 </h2>
               </div>
               <Link href="/estoque" className="text-xs text-teal-700 hover:underline font-bold">
@@ -594,16 +770,18 @@ export default function DashboardPage() {
             </div>
 
             <p className="text-xs text-slate-500 mb-3">
-              Ao registrar uma refeição, o estoque de ração diminui instantaneamente e a previsão de término é recalculada.
+              {activePet?.routineMode === "automatic_by_exception"
+                ? "Neste modo, o consumo de ração é deduzido automaticamente a cada dia decorrido. Você não precisa registrar refeições diárias, apenas registre abaixo quando NÃO tiver dado comida (jejum ou sobras no pote)."
+                : "Ao registrar uma refeição manualmente, o estoque de ração diminui instantaneamente e a previsão de término é recalculada."}
             </p>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
               {data?.inventory
                 ?.filter((it: any) => it.category === "racao")
                 .map((racao: any) => (
                   <div
                     key={racao.id}
-                    className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between"
+                    className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between"
                   >
                     <div>
                       <div className="flex items-start justify-between gap-1">
@@ -618,24 +796,48 @@ export default function DashboardPage() {
                           <Edit2 className="w-3.5 h-3.5" />
                         </Link>
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        Restam: <strong>{(racao.currentQuantity / 1000).toFixed(1)} kg</strong>
+                      <div className="text-[11px] text-slate-500 mt-1">
+                        Estoque atual: <strong>{(racao.currentQuantity / 1000).toFixed(1)} kg</strong>
+                        {racao.dailyConsumption > 0 && (
+                          <span className="text-slate-400 block">
+                            Consumo previsto: {racao.dailyConsumption}g/dia
+                          </span>
+                        )}
                       </div>
                     </div>
 
-                    <div className="mt-2.5 flex gap-1.5">
-                      <button
-                        onClick={() => handleQuickMeal(racao.id, 200)}
-                        className="flex-1 py-1 bg-white hover:bg-teal-50 border border-teal-300 text-teal-800 font-bold text-xs rounded-lg transition"
-                      >
-                        + 200g
-                      </button>
-                      <button
-                        onClick={() => handleQuickMeal(racao.id, 400)}
-                        className="flex-1 py-1 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition shadow-2xs"
-                      >
-                        + 400g (dia)
-                      </button>
+                    <div className="mt-3">
+                      {activePet?.routineMode === "automatic_by_exception" ? (
+                        <div className="space-y-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedRacaoForException(racao);
+                              setExceptionGrams(racao.dailyConsumption ? Math.round(racao.dailyConsumption / 2) : 200);
+                              setFeedingExceptionModalOpen(true);
+                            }}
+                            className="w-full py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 font-bold text-xs rounded-lg transition flex items-center justify-center gap-1.5 shadow-2xs"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                            <span>Registrar Exceção (Não Comeu / Jejum)</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => handleQuickMeal(racao.id, 200)}
+                            className="flex-1 py-1 bg-white hover:bg-teal-50 border border-teal-300 text-teal-800 font-bold text-xs rounded-lg transition"
+                          >
+                            + 200g
+                          </button>
+                          <button
+                            onClick={() => handleQuickMeal(racao.id, 400)}
+                            className="flex-1 py-1 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition shadow-2xs"
+                          >
+                            + 400g (dia)
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -797,6 +999,194 @@ export default function DashboardPage() {
           mode="edit"
           initialData={activePet}
         />
+      )}
+
+      {/* Modal: Registrar Exceção de Alimentação (Jejum / Não Comeu) */}
+      {feedingExceptionModalOpen && selectedRacaoForException && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Registrar Exceção de Alimentação
+                  </h3>
+                  <p className="text-[11px] text-slate-500">{selectedRacaoForException.name}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setFeedingExceptionModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleFeedingExceptionSubmit} className="space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Quantidade que NÃO foi consumida:
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="5000"
+                    value={exceptionGrams}
+                    onChange={(e) => setExceptionGrams(Math.max(1, Number(e.target.value)))}
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-xl font-bold text-slate-900 text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                  <span className="text-slate-500 font-semibold">{selectedRacaoForException.unit || "g"}</span>
+                </div>
+                <div className="flex gap-2 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setExceptionGrams(200)}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-amber-50 text-slate-700 hover:text-amber-900 rounded-lg text-[11px] font-semibold transition"
+                  >
+                    200g (Refeição)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExceptionGrams(400)}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-amber-50 text-slate-700 hover:text-amber-900 rounded-lg text-[11px] font-semibold transition"
+                  >
+                    400g (Dia Todo)
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Motivo da Exceção:
+                </label>
+                <select
+                  value={exceptionReason}
+                  onChange={(e) => setExceptionReason(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none font-medium text-slate-800"
+                >
+                  <option value="Jejum para exames / cirurgia">Jejum para exames / cirurgia</option>
+                  <option value="Não comeu a porção da manhã">Não comeu a porção da manhã</option>
+                  <option value="Não comeu a porção da noite">Não comeu a porção da noite</option>
+                  <option value="Sobrou ração no pote">Sobrou ração no pote</option>
+                  <option value="Apetite reduzido / comeu menos">Apetite reduzido / comeu menos</option>
+                  <option value="Outro">Outro motivo...</option>
+                </select>
+
+                {exceptionReason === "Outro" && (
+                  <input
+                    type="text"
+                    placeholder="Descreva o motivo..."
+                    value={customExceptionReason}
+                    onChange={(e) => setCustomExceptionReason(e.target.value)}
+                    className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                )}
+              </div>
+
+              <div className="bg-amber-50/70 p-3 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 leading-relaxed">
+                💡 <strong>Efeito no estoque:</strong> Como o PetRec deduz o consumo regular automaticamente, registrar esta exceção manterá <strong>+{exceptionGrams}g</strong> no estoque disponível.
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setFeedingExceptionModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl transition shadow-xs"
+                >
+                  Confirmar Exceção
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Pular Dose de Medicamento (Exceção) */}
+      {skipMedModalOpen && selectedAdmToSkip && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
+                  <Pill className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Pular Dose (Registrar Exceção)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {selectedAdmToSkip.medication?.name} • Horário: {safeFormat(selectedAdmToSkip.scheduledAt, "HH:mm")}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSkipMedModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmSkipMed} className="space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Motivo de não ter administrado:
+                </label>
+                <select
+                  value={skipMedReason}
+                  onChange={(e) => setSkipMedReason(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none font-medium text-slate-800"
+                >
+                  <option value="Vomitou / recusou o medicamento">Vomitou / recusou o medicamento</option>
+                  <option value="Esqueci de administrar no horário">Esqueci de administrar no horário</option>
+                  <option value="Jejum / orientação veterinária">Jejum / orientação veterinária</option>
+                  <option value="Animal ausente (viagem / clínica)">Animal ausente (viagem / clínica)</option>
+                  <option value="Outro">Outro motivo...</option>
+                </select>
+
+                {skipMedReason === "Outro" && (
+                  <input
+                    type="text"
+                    placeholder="Descreva o motivo..."
+                    value={customSkipReason}
+                    onChange={(e) => setCustomSkipReason(e.target.value)}
+                    className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                  />
+                )}
+              </div>
+
+              <div className="bg-rose-50/70 p-3 rounded-xl border border-rose-200/80 text-[11px] text-rose-900 leading-relaxed">
+                💡 <strong>Efeito no estoque:</strong> Ao marcar esta dose como pulada, o PetRec garante que <strong>{selectedAdmToSkip.quantity} {selectedAdmToSkip.medication?.unit || "dose"}</strong> permaneça no estoque disponível do medicamento.
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setSkipMedModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl transition"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl transition shadow-xs"
+                >
+                  Confirmar Pulo de Dose
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -24,6 +24,7 @@ export default defineSchema({
     color: v.optional(v.string()),
     microchip: v.optional(v.string()),
     notes: v.optional(v.string()),
+    routineMode: v.optional(v.string()), // "manual" | "automatic_by_exception"
   }),
 
   petMembers: defineTable({
@@ -94,6 +95,7 @@ export default defineSchema({
     estimatedEndDate: v.optional(v.string()),
     status: v.string(), // "OK", "ATENÇÃO", "COMPRAR AGORA", "SEM ESTOQUE", "ESTOQUE INSUFICIENTE"
     notes: v.optional(v.string()),
+    lastRoutineSyncDate: v.optional(v.string()),
   })
     .index("by_pet", ["petId"])
     .index("by_medication", ["medicationId"]),
