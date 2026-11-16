@@ -86,6 +86,8 @@ export async function GET(request: Request) {
       convexUrl:
         process.env.NEXT_PUBLIC_CONVEX_URL ||
         "https://robust-bullfrog-290.convex.cloud",
+      hasGeminiKey: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+      aiModel: "gemini-3.8-flash",
     },
     metaApiLive,
     testSendResult,

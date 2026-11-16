@@ -1,10 +1,36 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
+import { processNaturalLanguageWithAI } from "./whatsappAiAssistant";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
     "https://robust-bullfrog-290.convex.cloud"
 );
+
+function normalizeForMatch(value: string): string {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findPetMentionedInText(text: string, pets: any[]): any | undefined {
+  const normText = normalizeForMatch(text);
+  for (const pet of pets) {
+    const normName = normalizeForMatch(pet.name || "");
+    if (!normName || normName.length < 2) continue;
+    const regex = new RegExp(`(^|\\b|\\s)${escapeRegex(normName)}($|\\b|\\s|[,.:!?])`, "i");
+    if (regex.test(normText)) {
+      return pet;
+    }
+  }
+  return undefined;
+}
 
 export interface ProcessWhatsAppParams {
   fromPhone: string;
@@ -157,7 +183,24 @@ export async function processWhatsAppMessage(
     pets = allPets || [];
   }
 
-  const currentPet = pets[0];
+  const currentSession = context.session;
+  const currentState = currentSession?.state || "IDLE";
+
+  let currentPet =
+    (currentSession?.currentPetId
+      ? pets.find((p: any) => p._id === currentSession.currentPetId)
+      : null) || pets[0];
+
+  const mentionedPet = findPetMentionedInText(text, pets);
+  if (mentionedPet && currentPet && mentionedPet._id !== currentPet._id) {
+    currentPet = mentionedPet;
+    await convex.mutation(api.whatsapp.updateSession, {
+      userId: user._id,
+      currentPetId: currentPet._id,
+      state: currentState,
+      pendingActionPayload: currentSession?.pendingActionPayload,
+    });
+  }
 
   if (!currentPet) {
     return {
@@ -171,11 +214,118 @@ export async function processWhatsAppMessage(
     };
   }
 
-  const lower = text.toLowerCase();
-  const currentSession = context.session;
-  const currentState = currentSession?.state || "IDLE";
+  // Sincroniza rotina diária antes de avaliar ações/perguntas
+  try {
+    await convex.mutation(api.medications.syncRoutineMedications, {
+      petId: currentPet._id,
+    });
+    if (currentPet.routineMode !== "manual") {
+      await convex.mutation(api.inventory.syncRoutineConsumption, {
+        petId: currentPet._id,
+      });
+    }
+  } catch (syncErr) {
+    console.warn("[WhatsAppBot] Aviso ao sincronizar rotina:", syncErr);
+  }
 
-  // 3. Estado interativo: WAITING_WEIGHT (aguardando digitação de peso)
+  const lower = text.toLowerCase();
+  const normalizedCmd = normalizeForMatch(text);
+
+  // 3a. Estado interativo: WAITING_MED_CHOICE (desambiguação de medicamentos)
+  if (currentState === "WAITING_MED_CHOICE" && currentSession?.pendingActionPayload) {
+    if (normalizedCmd === "cancelar" || normalizedCmd === "sair" || normalizedCmd === "0") {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: currentPet._id,
+        state: "IDLE",
+      });
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: "Operação cancelada. Envie *0* para ver o menu principal.",
+        currentState: "IDLE",
+      };
+    }
+
+    try {
+      const payload = JSON.parse(currentSession.pendingActionPayload) as {
+        targetStatus: "administered" | "skipped";
+        reason?: string;
+        candidates: Array<{
+          id: string;
+          name: string;
+          time: string;
+          status: string;
+          quantity: number;
+        }>;
+      };
+
+      const numMatch = normalizedCmd.match(/^(\d+)$/);
+      let chosen =
+        numMatch &&
+        payload.candidates[parseInt(numMatch[1], 10) - 1]
+          ? payload.candidates[parseInt(numMatch[1], 10) - 1]
+          : undefined;
+
+      if (!chosen) {
+        chosen = payload.candidates.find((c) => {
+          const normName = normalizeForMatch(c.name);
+          return (
+            normName.includes(normalizedCmd) ||
+            normalizedCmd.includes(normName) ||
+            normalizedCmd.includes(c.time.slice(0, 2))
+          );
+        });
+      }
+
+      if (chosen) {
+        await convex.mutation(api.medications.administer, {
+          administrationId: chosen.id as any,
+          userId: user._id,
+          status: payload.targetStatus,
+          notes: payload.reason,
+        });
+
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId: user._id,
+          currentPetId: currentPet._id,
+          state: "IDLE",
+        });
+
+        return {
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: user.name,
+          replyText:
+            payload.targetStatus === "skipped"
+              ? `💊 *Exceção Registrada!*\n\nA dose das *${chosen.time}* de *${chosen.name}* para *${currentPet.name}* foi marcada como *NÃO administrada / pulada*.\n🛡️ Estoque preservado/estornado no PetRec!`
+              : `💊 *Medicamento Registrado!*\n\nDose das *${chosen.time}* de *${chosen.name}* para *${currentPet.name}* marcada como administrada!`,
+          actionTaken:
+            payload.targetStatus === "skipped"
+              ? "medication_skipped"
+              : "medication_administered",
+          currentState: "IDLE",
+        };
+      }
+    } catch (parseErr) {
+      console.warn("[WhatsAppBot] Erro ao ler pendingActionPayload:", parseErr);
+    }
+
+    return {
+      success: true,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText:
+        "⚠️ Não entendi qual dose você escolheu. Responda com o *número* da opção ou digite *cancelar*.",
+      currentState: "WAITING_MED_CHOICE",
+    };
+  }
+
+  // 3b. Estado interativo: WAITING_WEIGHT (aguardando digitação de peso)
   if (currentState === "WAITING_WEIGHT") {
     const match = text.match(/(\d+([.,]\d+)?)/);
     if (match) {
@@ -232,95 +382,12 @@ export async function processWhatsAppMessage(
     };
   }
 
-  // 4a. Reconhecimento Direto de Exceção de Alimentação (Jejum / Sobrou ração / Não comeu)
-  const exceptionFeedingMatch =
-    text.match(/(?:nao|não)\s+(?:dei|comeu|alimentei|dei\s+a)\s+(?:racao|ração|comida)/i) ||
-    text.match(/(?:jejum|sobrou\s+racao|sobrou\s+ração|sobrou\s+comida|recusou\s+a\s+comida|nao\s+quis\s+comer|não\s+quis\s+comer)/i);
-
-  if (exceptionFeedingMatch) {
-    const qtyMatch = text.match(/(\d+)\s*(?:g|gramas)?/i);
-    const inv = await convex.query(api.inventory.listByPet, {
-      petId: currentPet._id,
-    });
-    const racao = inv.find((i: any) => i.category === "racao") || inv[0];
-
-    if (racao) {
-      const doseNotEaten = qtyMatch
-        ? parseInt(qtyMatch[1])
-        : racao.dailyConsumption
-        ? Math.round(racao.dailyConsumption / 2)
-        : 200;
-
-      await convex.mutation(api.inventory.recordFeedingException, {
-        inventoryItemId: racao._id,
-        quantityNotConsumed: doseNotEaten,
-        reason: `Exceção informada via WhatsApp: "${text}"`,
-        userId: user._id,
-      });
-
-      return {
-        success: true,
-        senderPhone: cleanPhone,
-        userFound: true,
-        userName: user.name,
-        replyText: `🥣 *Exceção de Refeição Registrada!*\n\nRegistrado que *${currentPet.name}* *NÃO* consumiu *${doseNotEaten} ${racao.unit}* de *${racao.name}*.\n\n🛡️ Quantidade preservada no estoque do PetRec para não ser debitada indevidamente pela rotina!`,
-        actionTaken: "feeding_exception_recorded",
-        currentState: "IDLE",
-      };
-    }
-  }
-
-  // 4b. Reconhecimento Direto de Exceção de Medicamento (Não dei remédio / pulei dose / vomitou remédio)
-  const exceptionMedMatch =
-    text.match(/(?:nao|não)\s+(?:dei|tomou)\s+(?:o\s+)?(?:remedio|remédio|dose)/i) ||
-    text.match(/(?:pulei|esqueci|vomitou)\s+(?:a\s+dose|o\s+remedio|o\s+remédio|de\s+dar|dose|remédio|remedio)/i);
-
-  if (exceptionMedMatch) {
-    const todayAdms = await convex.query(
-      api.medications.getAdministrationsToday,
-      {
-        petId: currentPet._id,
-      }
-    );
-
-    const targetAdm =
-      todayAdms.find((a: any) => a.status === "administered") ||
-      todayAdms.find((a: any) => a.status === "scheduled");
-
-    if (targetAdm) {
-      await convex.mutation(api.medications.administer, {
-        administrationId: targetAdm._id,
-        userId: user._id,
-        status: "skipped",
-      });
-
-      return {
-        success: true,
-        senderPhone: cleanPhone,
-        userFound: true,
-        userName: user.name,
-        replyText: `💊 *Exceção de Medicamento Registrada!*\n\nA dose de *${targetAdm.medication?.name || "Medicamento"}* para *${currentPet.name}* foi marcada como *NÃO administrada / pulada*.\n\n🛡️ O estoque deste medicamento foi estornado no PetRec com sucesso!`,
-        actionTaken: "medication_skipped",
-        currentState: "IDLE",
-      };
-    } else {
-      return {
-        success: true,
-        senderPhone: cleanPhone,
-        userFound: true,
-        userName: user.name,
-        replyText: `💊 Nenhuma dose pendente ou administrada hoje foi encontrada para estornar em *${currentPet.name}*.`,
-        currentState: "IDLE",
-      };
-    }
-  }
-
-  // 4c. Reconhecimento Direto de Linguagem Natural: "alimentei 250g", "dei 300g", etc.
-  const naturalFeedingMatch = text.match(
-    /(?:alimentei|dei|comeu|coloquei|racao|ração)\s+(\d+)\s*(?:g|gramas)?/i
+  // 4. Atalhos diretos inequívocos (frases curtas e exatas)
+  const simpleFeedingMatch = normalizedCmd.match(
+    /^(?:alimentei|dei|coloquei)\s+(\d+)\s*(?:g|gramas)?$/i
   );
-  if (naturalFeedingMatch) {
-    const dose = parseInt(naturalFeedingMatch[1]);
+  if (simpleFeedingMatch) {
+    const dose = parseInt(simpleFeedingMatch[1], 10);
     if (!isNaN(dose) && dose > 0) {
       const inv = await convex.query(api.inventory.listByPet, {
         petId: currentPet._id,
@@ -331,7 +398,7 @@ export async function processWhatsAppMessage(
           inventoryItemId: racao._id,
           quantity: dose,
           userId: user._id,
-          notes: "Refeição registrada via WhatsApp (NLP)",
+          notes: "Refeição registrada via WhatsApp",
         });
 
         return {
@@ -347,12 +414,11 @@ export async function processWhatsAppMessage(
     }
   }
 
-  // Reconhecimento Direto de Linguagem Natural: "pesei 18.5kg" ou "peso 32kg"
-  const explicitWeightMatch = text.match(
-    /(?:pesei|peso|pesar)\s+(\d+([.,]\d+)?)\s*(?:kg)?/i
+  const simpleWeightMatch = normalizedCmd.match(
+    /^(?:pesei|peso|pesar)\s+(\d+(?:[.,]\d+)?)\s*(?:kg)?$/i
   );
-  if (explicitWeightMatch) {
-    const val = parseFloat(explicitWeightMatch[1].replace(",", "."));
+  if (simpleWeightMatch) {
+    const val = parseFloat(simpleWeightMatch[1].replace(",", "."));
     if (!isNaN(val) && val > 0 && val < 200) {
       await convex.mutation(api.health.recordWeight, {
         petId: currentPet._id,
@@ -375,16 +441,15 @@ export async function processWhatsAppMessage(
 
   // 5. COMANDO 0 / Menu
   if (
-    lower === "0" ||
-    lower === "menu" ||
-    lower === "ajuda" ||
-    lower === "oi" ||
-    lower === "ola" ||
-    lower === "olá" ||
-    lower === "start" ||
-    lower === "bom dia" ||
-    lower === "boa tarde" ||
-    lower === "boa noite"
+    normalizedCmd === "0" ||
+    normalizedCmd === "menu" ||
+    normalizedCmd === "ajuda" ||
+    normalizedCmd === "oi" ||
+    normalizedCmd === "ola" ||
+    normalizedCmd === "start" ||
+    normalizedCmd === "bom dia" ||
+    normalizedCmd === "boa tarde" ||
+    normalizedCmd === "boa noite"
   ) {
     await convex.mutation(api.whatsapp.updateSession, {
       userId: user._id,
@@ -396,6 +461,10 @@ export async function processWhatsAppMessage(
     const routineBadge = isRoutineAuto
       ? "🔄 *Modo por Exceção Ativo*"
       : "✍️ *Modo Manual Ativo*";
+    const switchPetLine =
+      pets.length > 1
+        ? `9️⃣ *Trocar Pet* — Alternar entre seus ${pets.length} pets\n`
+        : "";
 
     return {
       success: true,
@@ -420,18 +489,21 @@ export async function processWhatsAppMessage(
         `5️⃣ *Vacinas* — Próximos reforços e imunização\n` +
         `6️⃣ *Compras* — Lista de itens para comprar\n` +
         `7️⃣ *Peso* — Consultar ou registrar peso\n` +
-        `8️⃣ *Prontuário* — Histórico clínico e consultas\n\n` +
-        `💡 _Responda com o número ou envie frases naturais como ${
-          isRoutineAuto
-            ? '"não dei remédio", "jejum"'
-            : '"alimentei 200g"'
-        } ou "pesei 18.5kg"!_`,
+        `8️⃣ *Prontuário* — Histórico clínico e consultas\n` +
+        `${switchPetLine}\n` +
+        `🤖 _Você também pode conversar naturalmente:_\n` +
+        `_"deixou metade do pote"_, _"comprei 15kg de ração"_, _"cuspiu o comprimido das 8h"_ ou _"quando a ração vai acabar?"_!`,
       currentState: "IDLE",
     };
   }
 
   // 6. COMANDO 1 / Hoje
-  if (lower === "1" || lower.includes("hoje") || lower.includes("agenda")) {
+  if (
+    normalizedCmd === "1" ||
+    normalizedCmd === "hoje" ||
+    normalizedCmd === "agenda" ||
+    normalizedCmd === "tarefas"
+  ) {
     const todayAdms = await convex.query(
       api.medications.getAdministrationsToday,
       {
@@ -444,8 +516,21 @@ export async function processWhatsAppMessage(
       reply += "Nenhum medicamento pendente para hoje! Tudo em dia. ✨";
     } else {
       for (const a of todayAdms) {
-        const statusIcon = a.status === "administered" ? "✅" : "⏰";
-        reply += `${statusIcon} *${a.medication?.name || "Medicamento"}* (${a.quantity} dose)\n   Status: ${a.status === "administered" ? "Administrado" : "Agendado"}\n`;
+        const timeMatch = (a.scheduledAt || "").match(/T(\d{2}:\d{2})/);
+        const timeStr = timeMatch ? timeMatch[1] : "--:--";
+        const statusIcon =
+          a.status === "administered"
+            ? "✅"
+            : a.status === "skipped"
+            ? "❌"
+            : "⏰";
+        const statusLabel =
+          a.status === "administered"
+            ? "Administrado"
+            : a.status === "skipped"
+            ? "Pulado (estornado)"
+            : "Agendado";
+        reply += `${statusIcon} *${a.medication?.name || "Medicamento"}* às ${timeStr} (${a.quantity} dose)\n   Status: ${statusLabel}\n`;
       }
     }
 
@@ -461,10 +546,9 @@ export async function processWhatsAppMessage(
 
   // 7. COMANDO 2 / Estoque
   if (
-    lower === "2" ||
-    lower === "estoque" ||
-    lower.includes("ração") ||
-    lower.includes("racao")
+    normalizedCmd === "2" ||
+    normalizedCmd === "estoque" ||
+    normalizedCmd === "ver estoque"
   ) {
     const inv = await convex.query(api.inventory.listByPet, {
       petId: currentPet._id,
@@ -491,12 +575,10 @@ export async function processWhatsAppMessage(
 
   // 8. COMANDO 3 / Remédio
   if (
-    lower === "3" ||
-    lower === "remedio" ||
-    lower === "remédio" ||
-    lower.includes("remédio") ||
-    lower.includes("remedio") ||
-    lower.includes("dose")
+    normalizedCmd === "3" ||
+    normalizedCmd === "remedio" ||
+    normalizedCmd === "remedios" ||
+    normalizedCmd === "dose"
   ) {
     const isRoutineAuto = currentPet.routineMode !== "manual";
     const todayAdms = await convex.query(
@@ -515,15 +597,17 @@ export async function processWhatsAppMessage(
       } else {
         reply += `*Doses de hoje:*\n`;
         for (const a of todayAdms) {
+          const timeMatch = (a.scheduledAt || "").match(/T(\d{2}:\d{2})/);
+          const timeStr = timeMatch ? ` (${timeMatch[1]})` : "";
           const icon =
             a.status === "administered"
               ? "✅ Assumido como dado"
               : a.status === "skipped"
               ? "❌ Pulado (estornado)"
               : "⏰ Agendado";
-          reply += `• *${a.medication?.name || "Medicamento"}*: ${icon}\n`;
+          reply += `• *${a.medication?.name || "Medicamento"}*${timeStr}: ${icon}\n`;
         }
-        reply += `\n⚠️ *Para registrar que NÃO deu uma dose ou o pet vomitou:*\nEnvie *"não dei remédio"* ou *"pulei dose"*. O estoque de farmácia será estornado no PetRec!`;
+        reply += `\n⚠️ *Para registrar que NÃO deu uma dose:*\nEnvie por exemplo *"não dei o remédio das 8h"* ou *"pulei a dose"*. O estoque será estornado!`;
       }
 
       return {
@@ -568,11 +652,10 @@ export async function processWhatsAppMessage(
 
   // 9. COMANDO 4 / Refeição
   if (
-    lower === "4" ||
-    lower.includes("alimentei") ||
-    lower.includes("comida") ||
-    lower.includes("refeição") ||
-    lower.includes("refeicao")
+    normalizedCmd === "4" ||
+    normalizedCmd === "alimentei" ||
+    normalizedCmd === "comida" ||
+    normalizedCmd === "refeicao"
   ) {
     const isRoutineAuto = currentPet.routineMode !== "manual";
     const inv = await convex.query(api.inventory.listByPet, {
@@ -602,8 +685,8 @@ export async function processWhatsAppMessage(
           `🥣 *Alimentação Regular — ${currentPet.name}:*\n` +
           `_(🔄 Modo por Exceção Ativo)_\n\n` +
           `A ração é deduzida automaticamente todo dia conforme o consumo diário de *${racao.dailyConsumption} ${racao.unit}/dia* de *${racao.name}*.\n\n` +
-          `⚠️ *Se o pet ficou em jejum ou sobrou comida no comedouro:*\n` +
-          `Envie *"jejum"*, *"não dei ração"* ou *"sobrou 150g"*. Essa quantidade será preservada/creditada no estoque!`,
+          `⚠️ *Se o pet ficou em jejum ou deixou sobra no pote:*\n` +
+          `Envie *"jejum"*, *"deixou metade do pote"* ou *"sobrou 150g"*. Essa quantidade será preservada no estoque!`,
         currentState: "IDLE",
       };
     } else {
@@ -630,7 +713,11 @@ export async function processWhatsAppMessage(
   }
 
   // 10. COMANDO 5 / Vacinas
-  if (lower === "5" || lower.includes("vacina")) {
+  if (
+    normalizedCmd === "5" ||
+    normalizedCmd === "vacina" ||
+    normalizedCmd === "vacinas"
+  ) {
     const health = await convex.query(api.health.getPetHealth, {
       petId: currentPet._id,
     });
@@ -653,12 +740,18 @@ export async function processWhatsAppMessage(
   }
 
   // 11. COMANDO 6 / Compras
-  if (lower === "6" || lower.includes("compra") || lower.includes("compras")) {
+  if (
+    normalizedCmd === "6" ||
+    normalizedCmd === "compra" ||
+    normalizedCmd === "compras" ||
+    normalizedCmd === "comprei" ||
+    normalizedCmd === "lista de compras"
+  ) {
     const shopping = await convex.query(api.inventory.listShoppingList, {
       petId: currentPet._id,
     });
     let reply = `🛒 *Lista de Compras — ${currentPet.name}:*\n\n`;
-    const pendingItems = shopping.filter((s: any) => !s.purchased);
+    const pendingItems = shopping.filter((s: any) => !s.isPurchased);
 
     if (pendingItems.length === 0) {
       reply += "Nenhum item pendente na lista de compras! Tudo abastecido. ✨";
@@ -667,6 +760,8 @@ export async function processWhatsAppMessage(
         reply += `• *${it.customName || it.inventoryItem?.name || "Item"}* (${it.quantity || 1} ${it.unit || "un"})\n`;
       }
     }
+
+    reply += `\n💡 _Se já comprou algo, envie por exemplo: "comprei 15kg de ração"!_`;
 
     return {
       success: true,
@@ -679,7 +774,7 @@ export async function processWhatsAppMessage(
   }
 
   // 12. COMANDO 7 / Peso
-  if (lower === "7" || lower === "peso" || lower === "pesei") {
+  if (normalizedCmd === "7" || normalizedCmd === "peso" || normalizedCmd === "pesei") {
     await convex.mutation(api.whatsapp.updateSession, {
       userId: user._id,
       currentPetId: currentPet._id,
@@ -702,10 +797,10 @@ export async function processWhatsAppMessage(
 
   // 13. COMANDO 8 / Prontuário
   if (
-    lower === "8" ||
-    lower.includes("prontuário") ||
-    lower.includes("prontuario") ||
-    lower.includes("consulta")
+    normalizedCmd === "8" ||
+    normalizedCmd === "prontuario" ||
+    normalizedCmd === "consulta" ||
+    normalizedCmd === "historico"
   ) {
     const health = await convex.query(api.health.getPetHealth, {
       petId: currentPet._id,
@@ -716,7 +811,7 @@ export async function processWhatsAppMessage(
       reply += "Nenhum apontamento veterinário registrado até o momento.";
     } else {
       for (const n of health.clinicalNotes.slice(0, 3)) {
-        const authorName = (n as any).author?.name || "Veterinário";
+        const authorName = (n as any).author?.name || "Tutor/Vet";
         reply += `• *Nota por ${authorName}*:\n  ${(n as any).content || ""}\n`;
       }
     }
@@ -731,20 +826,93 @@ export async function processWhatsAppMessage(
     };
   }
 
-  // Fallback amigável
+  // 14. COMANDO 9 / Trocar Pet
+  if (
+    normalizedCmd === "9" ||
+    normalizedCmd === "trocar pet" ||
+    normalizedCmd === "mudar pet" ||
+    normalizedCmd === "outro pet" ||
+    normalizedCmd === "pets"
+  ) {
+    if (pets.length <= 1) {
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: `🐾 Você possui apenas *${currentPet.name}* cadastrado no momento.`,
+        currentState: "IDLE",
+      };
+    }
+
+    const currentIdx = pets.findIndex((p: any) => p._id === currentPet._id);
+    const nextPet = pets[(currentIdx + 1) % pets.length];
+
+    await convex.mutation(api.whatsapp.updateSession, {
+      userId: user._id,
+      currentPetId: nextPet._id,
+      state: "IDLE",
+    });
+
+    return {
+      success: true,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText:
+        `🐾 *Pet em foco alternado!*\n\n` +
+        `Agora estou respondendo para *${nextPet.name}* (${nextPet.species}).\n` +
+        `Envie *0* para ver o menu de *${nextPet.name}* ou mande uma mensagem falando naturalmente!`,
+      actionTaken: "pet_switched",
+      currentState: "IDLE",
+    };
+  }
+
+  // 15. Interpretação com IA (Gemini 3.8 Flash + Tool Calling + NLU Contextual)
+  const aiResult = await processNaturalLanguageWithAI({
+    convex,
+    messageText: text,
+    currentPet,
+    allPets: pets,
+    userId: user._id,
+  });
+
+  if (aiResult.handled) {
+    if (aiResult.nextState === "WAITING_MED_CHOICE" && aiResult.pendingActionPayload) {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: currentPet._id,
+        state: "WAITING_MED_CHOICE",
+        pendingActionPayload: aiResult.pendingActionPayload,
+      });
+    }
+
+    return {
+      success: true,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText: aiResult.replyText,
+      actionTaken: aiResult.actionTaken,
+      currentState: aiResult.nextState,
+    };
+  }
+
+  // 16. Fallback amigável
   return {
     success: true,
     senderPhone: cleanPhone,
     userFound: true,
     userName: user.name,
     replyText:
-      `🐾 Mensagem recebida para *${currentPet.name}*!\n\n` +
-      `Envie *0* para ver o menu completo ou escolha:\n` +
-      `• *1* — Tarefas de Hoje\n` +
-      `• *2* — Estoque de Ração\n` +
-      `• *3* — Remédio\n` +
-      `• *4* — Registrar Refeição\n` +
-      `• *7* — Atualizar Peso`,
+      `🐾 Não identifiquei uma ação exata para *${currentPet.name}*, mas você pode tentar:\n\n` +
+      `• _"O ${currentPet.name} deixou metade do pote hoje cedo"_\n` +
+      `• _"Não consegui dar o comprimido das 8h"_\n` +
+      `• _"Comprei um saco de 15kg de ração"_\n` +
+      `• _"Pesei o balde e tem 4,2kg de ração"_\n` +
+      `• _"Anota aí que ele teve diarreia hoje"_\n` +
+      `• _"Quando a ração vai acabar?"_\n\n` +
+      `Ou envie *0* para abrir o menu numérico.`,
     currentState: "IDLE",
   };
 }

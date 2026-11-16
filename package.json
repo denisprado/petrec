@@ -12,6 +12,7 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@google/genai": "^3.3.0",
     "@prisma/client": "^5.21.1",
     "clsx": "^2.1.1",
     "convex": "^1.46.0",

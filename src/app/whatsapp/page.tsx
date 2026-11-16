@@ -569,6 +569,22 @@ export default function WhatsAppPage() {
                     </span>
                   </div>
 
+                  <div className="flex justify-between items-center text-[11px] pt-1 border-t border-slate-200/70">
+                    <span className="text-slate-600">Motor IA / Linguagem Natural:</span>
+                    {diagnostics.environment.hasGeminiKey ? (
+                      <span className="text-emerald-700 font-bold flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Gemini ({diagnostics.environment.aiModel})
+                      </span>
+                    ) : (
+                      <span
+                        className="text-amber-700 font-bold"
+                        title="Configure GEMINI_API_KEY na Vercel para LLM completo; o interpretador semântico local segue ativo."
+                      >
+                        NLU Contextual Local (sem GEMINI_API_KEY)
+                      </span>
+                    )}
+                  </div>
+
                   {(!diagnostics.environment.hasApiToken || !diagnostics.environment.hasPhoneId) && (
                     <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg text-red-800 text-[11px] leading-relaxed">
                       ⚠️ <strong>Atenção:</strong> Suas credenciais não estão configuradas na Vercel!
@@ -722,31 +738,58 @@ export default function WhatsAppPage() {
           </div>
 
           {/* Atalhos Rápidos para Testar */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-2.5">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Comandos Rápidos para Testar:
-            </h3>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { label: "0 - Menu", cmd: "0" },
-                { label: "1 - Hoje", cmd: "1" },
-                { label: "2 - Estoque", cmd: "2" },
-                { label: "3 - Remédio", cmd: "3" },
-                { label: "4 - Alimentei", cmd: "4" },
-                { label: "5 - Vacinas", cmd: "5" },
-                { label: "6 - Comprei", cmd: "6" },
-                { label: "7 - Peso", cmd: "7" },
-                { label: "8 - Prontuário", cmd: "8" },
-                { label: "9 - Trocar Pet", cmd: "9" },
-              ].map((btn) => (
-                <button
-                  key={btn.label}
-                  onClick={() => handleSendMessage(btn.cmd)}
-                  className="px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-800 text-slate-700 rounded-lg text-xs font-medium transition border border-slate-200 cursor-pointer"
-                >
-                  {btn.label}
-                </button>
-              ))}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3">
+            <div className="space-y-2">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                Comandos Rápidos para Testar:
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { label: "0 - Menu", cmd: "0" },
+                  { label: "1 - Hoje", cmd: "1" },
+                  { label: "2 - Estoque", cmd: "2" },
+                  { label: "3 - Remédio", cmd: "3" },
+                  { label: "4 - Alimentei", cmd: "4" },
+                  { label: "5 - Vacinas", cmd: "5" },
+                  { label: "6 - Comprei", cmd: "6" },
+                  { label: "7 - Peso", cmd: "7" },
+                  { label: "8 - Prontuário", cmd: "8" },
+                  { label: "9 - Trocar Pet", cmd: "9" },
+                ].map((btn) => (
+                  <button
+                    key={btn.label}
+                    onClick={() => handleSendMessage(btn.cmd)}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-800 text-slate-700 rounded-lg text-xs font-medium transition border border-slate-200 cursor-pointer"
+                  >
+                    {btn.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
+                <Bot className="w-3.5 h-3.5" />
+                <span>Testar Frases Naturais (IA):</span>
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  `O ${pets.find((p: any) => p.id === activePetId)?.name || pets[0]?.name || "Gengibre"} deixou metade do pote hoje cedo`,
+                  "Não consegui dar o comprimido das 8h porque ele cuspiu",
+                  "Comprei um saco de 15kg de ração",
+                  "Pesei o balde e tem 4,2kg de ração",
+                  "Anota aí que ele teve diarreia hoje à tarde",
+                  "Quando a ração vai acabar?",
+                ].map((phrase) => (
+                  <button
+                    key={phrase}
+                    onClick={() => handleSendMessage(phrase)}
+                    className="px-2.5 py-1 bg-emerald-50/70 hover:bg-emerald-100 text-emerald-900 rounded-lg text-[11px] font-medium transition border border-emerald-200 text-left cursor-pointer"
+                  >
+                    &ldquo;{phrase}&rdquo;
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
