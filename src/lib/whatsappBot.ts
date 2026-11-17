@@ -1,6 +1,11 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
-import { processNaturalLanguageWithAI } from "./whatsappAiAssistant";
+import {
+  buildPetContextSnapshot,
+  executeAssistantToolCall,
+  PendingItemCandidate,
+  processNaturalLanguageWithAI,
+} from "./whatsappAiAssistant";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -32,10 +37,45 @@ function findPetMentionedInText(text: string, pets: any[]): any | undefined {
   return undefined;
 }
 
+function findAllPetsMentionedInText(text: string, pets: any[]): any[] {
+  const normText = normalizeForMatch(text);
+  const found: Array<{ pet: any; index: number }> = [];
+
+  for (const pet of pets) {
+    const normName = normalizeForMatch(pet.name || "");
+    if (!normName || normName.length < 2) continue;
+    const regex = new RegExp(`(?:^|\\b|\\s)(${escapeRegex(normName)})(?:$|\\b|\\s|[,.:!?])`, "i");
+    const match = normText.match(regex);
+    if (match && match.index !== undefined) {
+      found.push({ pet, index: match.index });
+    }
+  }
+
+  return found.sort((a, b) => a.index - b.index).map((f) => f.pet);
+}
+
+async function syncPetRoutineSafe(pet: any): Promise<void> {
+  try {
+    await convex.mutation(api.medications.syncRoutineMedications, {
+      petId: pet._id,
+    });
+    if (pet.routineMode !== "manual") {
+      await convex.mutation(api.inventory.syncRoutineConsumption, {
+        petId: pet._id,
+      });
+    }
+  } catch (syncErr) {
+    console.warn("[WhatsAppBot] Aviso ao sincronizar rotina:", syncErr);
+  }
+}
+
 export interface ProcessWhatsAppParams {
   fromPhone: string;
   messageText: string;
   userId?: string;
+  mediaType?: "audio" | "image";
+  mediaBase64?: string;
+  mediaMimeType?: string;
 }
 
 export interface ProcessWhatsAppResult {
@@ -55,12 +95,12 @@ export interface ProcessWhatsAppResult {
 export async function processWhatsAppMessage(
   params: ProcessWhatsAppParams
 ): Promise<ProcessWhatsAppResult> {
-  const { fromPhone, messageText, userId } = params;
+  const { fromPhone, messageText, userId, mediaType, mediaBase64, mediaMimeType } = params;
 
   let phone = fromPhone || "+5519988887777";
   const text = (messageText || "").trim();
 
-  if (!text) {
+  if (!text && !mediaType) {
     return {
       success: false,
       replyText: "Mensagem vazia.",
@@ -186,21 +226,11 @@ export async function processWhatsAppMessage(
   const currentSession = context.session;
   const currentState = currentSession?.state || "IDLE";
 
-  let currentPet =
+  const previousPet =
     (currentSession?.currentPetId
       ? pets.find((p: any) => p._id === currentSession.currentPetId)
       : null) || pets[0];
-
-  const mentionedPet = findPetMentionedInText(text, pets);
-  if (mentionedPet && currentPet && mentionedPet._id !== currentPet._id) {
-    currentPet = mentionedPet;
-    await convex.mutation(api.whatsapp.updateSession, {
-      userId: user._id,
-      currentPetId: currentPet._id,
-      state: currentState,
-      pendingActionPayload: currentSession?.pendingActionPayload,
-    });
-  }
+  let currentPet = previousPet;
 
   if (!currentPet) {
     return {
@@ -214,24 +244,330 @@ export async function processWhatsAppMessage(
     };
   }
 
-  // Sincroniza rotina diária antes de avaliar ações/perguntas
-  try {
-    await convex.mutation(api.medications.syncRoutineMedications, {
-      petId: currentPet._id,
-    });
-    if (currentPet.routineMode !== "manual") {
-      await convex.mutation(api.inventory.syncRoutineConsumption, {
-        petId: currentPet._id,
-      });
-    }
-  } catch (syncErr) {
-    console.warn("[WhatsAppBot] Aviso ao sincronizar rotina:", syncErr);
-  }
-
   const lower = text.toLowerCase();
   const normalizedCmd = normalizeForMatch(text);
+  const mentionedPets = text ? findAllPetsMentionedInText(text, pets) : [];
 
-  // 3a. Estado interativo: WAITING_MED_CHOICE (desambiguação de medicamentos)
+  // Processamento Multi-Pet simultâneo na mesma mensagem (ex: "O Rex comeu 200g e a Luna ficou em jejum")
+  if (currentState === "IDLE" && !mediaType && mentionedPets.length >= 2) {
+    const petNamesAlternation = mentionedPets
+      .map((p: any) => escapeRegex(normalizeForMatch(p.name || "")))
+      .filter(Boolean)
+      .join("|");
+
+    const splitPattern = new RegExp(
+      `(?:,|;|\\s+e\\s+)(?=(?:o\\s+|a\\s+)?(?:${petNamesAlternation})\\b)`,
+      "i"
+    );
+    const clauses = text
+      .split(splitPattern)
+      .map((c) => c.trim())
+      .filter(Boolean);
+
+    if (clauses.length >= 2) {
+      const replies: string[] = [];
+      const actions: string[] = [];
+      let lastHandledPet = currentPet;
+      let nextState = "IDLE";
+      let pendingPayload: string | undefined;
+
+      for (const clause of clauses) {
+        const clausePet = findPetMentionedInText(clause, mentionedPets) || lastHandledPet;
+        lastHandledPet = clausePet;
+        await syncPetRoutineSafe(clausePet);
+
+        const aiClauseRes = await processNaturalLanguageWithAI({
+          convex,
+          messageText: clause,
+          currentPet: clausePet,
+          allPets: pets,
+          userId: user._id,
+        });
+
+        if (aiClauseRes.handled) {
+          replies.push(aiClauseRes.replyText);
+          if (aiClauseRes.actionTaken) actions.push(aiClauseRes.actionTaken);
+          if (aiClauseRes.nextState !== "IDLE" && aiClauseRes.pendingActionPayload) {
+            nextState = aiClauseRes.nextState;
+            pendingPayload = aiClauseRes.pendingActionPayload;
+          }
+        }
+      }
+
+      if (replies.length > 0) {
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId: user._id,
+          currentPetId: lastHandledPet._id,
+          state: nextState,
+          pendingActionPayload: pendingPayload,
+        });
+
+        return {
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: user.name,
+          replyText: `🐾 *Atualização Multi-Pet registrada:*\n\n${replies.join("\n\n---\n\n")}`,
+          actionTaken: actions.join(",") || "multi_pet_updated",
+          currentState: nextState,
+        };
+      }
+    }
+  }
+
+  let autoSwitchNotice = "";
+  if (
+    mentionedPets.length === 1 &&
+    currentState === "IDLE" &&
+    mentionedPets[0]._id !== currentPet._id
+  ) {
+    currentPet = mentionedPets[0];
+    await convex.mutation(api.whatsapp.updateSession, {
+      userId: user._id,
+      currentPetId: currentPet._id,
+      state: currentState,
+      pendingActionPayload: currentSession?.pendingActionPayload,
+    });
+    autoSwitchNotice = `🔄 _(Pet em foco alternado para *${currentPet.name}*)_\n\n`;
+  }
+
+  // Sincroniza rotina diária antes de avaliar ações/perguntas
+  await syncPetRoutineSafe(currentPet);
+
+  // 3a. Estado interativo: WAITING_PET_CHOICE (escolha de pet via lista numerada)
+  if (currentState === "WAITING_PET_CHOICE") {
+    if (normalizedCmd === "cancelar" || normalizedCmd === "sair" || normalizedCmd === "0") {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: currentPet._id,
+        state: "IDLE",
+      });
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: "Operação cancelada. Envie *0* para ver o menu principal.",
+        currentState: "IDLE",
+      };
+    }
+
+    let candidates: Array<{ id: string; name: string; species: string }> = pets.map((p: any) => ({
+      id: String(p._id),
+      name: p.name,
+      species: p.species,
+    }));
+
+    if (currentSession?.pendingActionPayload) {
+      try {
+        const parsed = JSON.parse(currentSession.pendingActionPayload);
+        if (Array.isArray(parsed?.candidates)) candidates = parsed.candidates;
+      } catch {
+        // usa lista atual de pets
+      }
+    }
+
+    const numMatch = normalizedCmd.match(/^(\d+)$/);
+    let chosenPet =
+      numMatch && candidates[parseInt(numMatch[1], 10) - 1]
+        ? candidates[parseInt(numMatch[1], 10) - 1]
+        : undefined;
+
+    if (!chosenPet) {
+      chosenPet = candidates.find((c) => {
+        const normName = normalizeForMatch(c.name);
+        return normName === normalizedCmd || normalizedCmd.includes(normName);
+      });
+    }
+
+    if (chosenPet) {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: chosenPet.id as any,
+        state: "IDLE",
+      });
+
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText:
+          `🐾 *Pet em foco alternado!*\n\n` +
+          `Agora estou respondendo para *${chosenPet.name}* (${chosenPet.species}).\n` +
+          `Envie *0* para ver o menu de *${chosenPet.name}* ou fale naturalmente!`,
+        actionTaken: "pet_switched",
+        currentState: "IDLE",
+      };
+    }
+
+    return {
+      success: true,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText:
+        "⚠️ Não entendi qual pet você escolheu. Responda com o *número* da lista ou *nome do pet*, ou digite *cancelar*.",
+      currentState: "WAITING_PET_CHOICE",
+    };
+  }
+
+  // 3b. Estado interativo: WAITING_ITEM_CHOICE (desambiguação de itens no estoque)
+  if (currentState === "WAITING_ITEM_CHOICE" && currentSession?.pendingActionPayload) {
+    if (normalizedCmd === "cancelar" || normalizedCmd === "sair" || normalizedCmd === "0") {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: currentPet._id,
+        state: "IDLE",
+      });
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: "Operação cancelada. Envie *0* para ver o menu principal.",
+        currentState: "IDLE",
+      };
+    }
+
+    try {
+      const payload = JSON.parse(currentSession.pendingActionPayload) as {
+        toolName: string;
+        args: Record<string, any>;
+        candidates: PendingItemCandidate[];
+      };
+
+      const numMatch = normalizedCmd.match(/^(\d+)$/);
+      let chosen =
+        numMatch && payload.candidates[parseInt(numMatch[1], 10) - 1]
+          ? payload.candidates[parseInt(numMatch[1], 10) - 1]
+          : undefined;
+
+      if (!chosen) {
+        chosen = payload.candidates.find((c) => {
+          const normName = normalizeForMatch(c.name);
+          return normName.includes(normalizedCmd) || normalizedCmd.includes(normName);
+        });
+      }
+
+      if (chosen) {
+        const snapshot = await buildPetContextSnapshot(convex, currentPet, pets);
+        const exec = await executeAssistantToolCall({
+          convex,
+          toolName: payload.toolName,
+          args: { ...payload.args, itemName: chosen.name },
+          snapshot,
+          userId: user._id,
+        });
+
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId: user._id,
+          currentPetId: currentPet._id,
+          state: "IDLE",
+        });
+
+        return {
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: user.name,
+          replyText: exec.replyText,
+          actionTaken: exec.actionTaken,
+          currentState: "IDLE",
+        };
+      }
+    } catch (parseErr) {
+      console.warn("[WhatsAppBot] Erro ao ler WAITING_ITEM_CHOICE payload:", parseErr);
+    }
+
+    return {
+      success: true,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText:
+        "⚠️ Não consegui identificar o item. Responda com o *número* da opção ou *nome do produto*, ou digite *cancelar*.",
+      currentState: "WAITING_ITEM_CHOICE",
+    };
+  }
+
+  // 3c. Estado interativo: WAITING_MISSING_QUANTITY (quantidade pendente em compra)
+  if (currentState === "WAITING_MISSING_QUANTITY" && currentSession?.pendingActionPayload) {
+    if (normalizedCmd === "cancelar" || normalizedCmd === "sair" || normalizedCmd === "0") {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: currentPet._id,
+        state: "IDLE",
+      });
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText: "Operação cancelada. Envie *0* para ver o menu principal.",
+        currentState: "IDLE",
+      };
+    }
+
+    try {
+      const payload = JSON.parse(currentSession.pendingActionPayload) as {
+        itemName: string;
+      };
+
+      const qtyMatch = normalizedCmd.match(
+        /(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|ml|unidades?|un)?/
+      );
+      if (qtyMatch) {
+        const qty = parseFloat(qtyMatch[1].replace(",", "."));
+        const unit = qtyMatch[2] || (payload.itemName.toLowerCase().includes("raç") ? "kg" : "unidades");
+
+        const snapshot = await buildPetContextSnapshot(convex, currentPet, pets);
+        const exec = await executeAssistantToolCall({
+          convex,
+          toolName: "record_purchase",
+          args: {
+            itemName: payload.itemName,
+            quantity: qty,
+            unit,
+            notes: `Compra completada via WhatsApp (${text})`,
+          },
+          snapshot,
+          userId: user._id,
+        });
+
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId: user._id,
+          currentPetId: currentPet._id,
+          state: exec.nextState || "IDLE",
+          pendingActionPayload: exec.pendingActionPayload,
+        });
+
+        return {
+          success: true,
+          senderPhone: cleanPhone,
+          userFound: true,
+          userName: user.name,
+          replyText: exec.replyText,
+          actionTaken: exec.actionTaken,
+          currentState: exec.nextState || "IDLE",
+        };
+      }
+    } catch (parseErr) {
+      console.warn("[WhatsAppBot] Erro ao ler WAITING_MISSING_QUANTITY:", parseErr);
+    }
+
+    return {
+      success: true,
+      senderPhone: cleanPhone,
+      userFound: true,
+      userName: user.name,
+      replyText:
+        "⚠️ Informe a quantidade comprada (ex: *15kg*, *2kg* ou *20 unidades*), ou digite *cancelar*.",
+      currentState: "WAITING_MISSING_QUANTITY",
+    };
+  }
+
+  // 3d. Estado interativo: WAITING_MED_CHOICE (desambiguação de medicamentos)
   if (currentState === "WAITING_MED_CHOICE" && currentSession?.pendingActionPayload) {
     if (normalizedCmd === "cancelar" || normalizedCmd === "sair" || normalizedCmd === "0") {
       await convex.mutation(api.whatsapp.updateSession, {
@@ -325,7 +661,7 @@ export async function processWhatsAppMessage(
     };
   }
 
-  // 3b. Estado interativo: WAITING_WEIGHT (aguardando digitação de peso)
+  // 3e. Estado interativo: WAITING_WEIGHT (aguardando digitação de peso)
   if (currentState === "WAITING_WEIGHT") {
     const match = text.match(/(\d+([.,]\d+)?)/);
     if (match) {
@@ -832,7 +1168,9 @@ export async function processWhatsAppMessage(
     normalizedCmd === "trocar pet" ||
     normalizedCmd === "mudar pet" ||
     normalizedCmd === "outro pet" ||
-    normalizedCmd === "pets"
+    normalizedCmd === "pets" ||
+    normalizedCmd.startsWith("trocar para ") ||
+    normalizedCmd.startsWith("mudar para ")
   ) {
     if (pets.length <= 1) {
       return {
@@ -845,13 +1183,49 @@ export async function processWhatsAppMessage(
       };
     }
 
-    const currentIdx = pets.findIndex((p: any) => p._id === currentPet._id);
-    const nextPet = pets[(currentIdx + 1) % pets.length];
+    if (
+      (normalizedCmd.startsWith("trocar para ") || normalizedCmd.startsWith("mudar para ")) &&
+      mentionedPets.length === 1
+    ) {
+      const targetPet = mentionedPets[0];
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        currentPetId: targetPet._id,
+        state: "IDLE",
+      });
+
+      return {
+        success: true,
+        senderPhone: cleanPhone,
+        userFound: true,
+        userName: user.name,
+        replyText:
+          `🐾 *Pet em foco alternado!*\n\n` +
+          `Agora estou respondendo para *${targetPet.name}* (${targetPet.species}).\n` +
+          `Envie *0* para ver o menu de *${targetPet.name}* ou fale naturalmente!`,
+        actionTaken: "pet_switched",
+        currentState: "IDLE",
+      };
+    }
+
+    const candidates = pets.map((p: any) => ({
+      id: String(p._id),
+      name: p.name,
+      species: p.species,
+    }));
+
+    const numberEmojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"];
+    const optionsLines = candidates.map((c: any, idx: number) => {
+      const prefix = numberEmojis[idx] || `${idx + 1}.`;
+      const isCurrent = c.id === String(currentPet._id);
+      return `${prefix} *${c.name}* (${c.species})${isCurrent ? " ✅ [Atual]" : ""}`;
+    });
 
     await convex.mutation(api.whatsapp.updateSession, {
       userId: user._id,
-      currentPetId: nextPet._id,
-      state: "IDLE",
+      currentPetId: currentPet._id,
+      state: "WAITING_PET_CHOICE",
+      pendingActionPayload: JSON.stringify({ candidates }),
     });
 
     return {
@@ -860,29 +1234,31 @@ export async function processWhatsAppMessage(
       userFound: true,
       userName: user.name,
       replyText:
-        `🐾 *Pet em foco alternado!*\n\n` +
-        `Agora estou respondendo para *${nextPet.name}* (${nextPet.species}).\n` +
-        `Envie *0* para ver o menu de *${nextPet.name}* ou mande uma mensagem falando naturalmente!`,
-      actionTaken: "pet_switched",
-      currentState: "IDLE",
+        `🐾 *Qual pet você deseja colocar em foco?*\n\n` +
+        `${optionsLines.join("\n")}\n\n` +
+        `👉 Responda com o *número* ou *nome do pet*, ou digite *cancelar*.`,
+      currentState: "WAITING_PET_CHOICE",
     };
   }
 
-  // 15. Interpretação com IA (Gemini 3.8 Flash + Tool Calling + NLU Contextual)
+  // 15. Interpretação com IA (Gemini 3.8 Flash + Tool Calling + NLU Contextual + Áudio/Fotos)
   const aiResult = await processNaturalLanguageWithAI({
     convex,
     messageText: text,
     currentPet,
     allPets: pets,
     userId: user._id,
+    mediaType,
+    mediaBase64,
+    mediaMimeType,
   });
 
   if (aiResult.handled) {
-    if (aiResult.nextState === "WAITING_MED_CHOICE" && aiResult.pendingActionPayload) {
+    if (aiResult.nextState !== "IDLE" && aiResult.pendingActionPayload) {
       await convex.mutation(api.whatsapp.updateSession, {
         userId: user._id,
         currentPetId: currentPet._id,
-        state: "WAITING_MED_CHOICE",
+        state: aiResult.nextState,
         pendingActionPayload: aiResult.pendingActionPayload,
       });
     }
@@ -892,7 +1268,7 @@ export async function processWhatsAppMessage(
       senderPhone: cleanPhone,
       userFound: true,
       userName: user.name,
-      replyText: aiResult.replyText,
+      replyText: `${autoSwitchNotice}${aiResult.replyText}`,
       actionTaken: aiResult.actionTaken,
       currentState: aiResult.nextState,
     };
@@ -905,13 +1281,14 @@ export async function processWhatsAppMessage(
     userFound: true,
     userName: user.name,
     replyText:
-      `🐾 Não identifiquei uma ação exata para *${currentPet.name}*, mas você pode tentar:\n\n` +
+      `${autoSwitchNotice}🐾 Não identifiquei uma ação exata para *${currentPet.name}*, mas você pode tentar:\n\n` +
       `• _"O ${currentPet.name} deixou metade do pote hoje cedo"_\n` +
       `• _"Não consegui dar o comprimido das 8h"_\n` +
       `• _"Comprei um saco de 15kg de ração"_\n` +
       `• _"Pesei o balde e tem 4,2kg de ração"_\n` +
       `• _"Anota aí que ele teve diarreia hoje"_\n` +
-      `• _"Quando a ração vai acabar?"_\n\n` +
+      `• _"Quando a ração vai acabar?"_\n` +
+      `• Ou enviar um *áudio* ou *foto de receita / vacina*!\n\n` +
       `Ou envie *0* para abrir o menu numérico.`,
     currentState: "IDLE",
   };

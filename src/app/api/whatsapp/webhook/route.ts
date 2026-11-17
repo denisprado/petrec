@@ -54,8 +54,15 @@ export async function POST(request: Request) {
               const from = message.from; // Número do usuário sem '+' (ex: "5519988887777")
               if (!from) continue;
 
-              // Extrair texto da mensagem (seja texto normal, botão ou lista interativa)
+              const apiToken =
+                process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
+
+              // Extrair texto ou mídia (áudio / imagem) da mensagem recebida
               let text = "";
+              let mediaType: "audio" | "image" | undefined;
+              let mediaBase64: string | undefined;
+              let mediaMimeType: string | undefined;
+
               if (message.type === "text" && message.text?.body) {
                 text = message.text.body;
               } else if (message.type === "button" && message.button?.text) {
@@ -66,16 +73,43 @@ export async function POST(request: Request) {
                   message.interactive?.list_reply?.title ||
                   message.interactive?.button_reply?.id ||
                   "";
+              } else if (message.type === "audio" && message.audio?.id) {
+                mediaType = "audio";
+                mediaMimeType = (message.audio.mime_type || "audio/ogg").split(";")[0].trim();
+                text = "[Áudio recebido]";
+                if (apiToken) {
+                  const downloaded = await downloadMetaMediaAsBase64(message.audio.id, apiToken);
+                  if (downloaded) {
+                    mediaBase64 = downloaded.base64;
+                    mediaMimeType = downloaded.mimeType;
+                  }
+                }
+              } else if (message.type === "image" && message.image?.id) {
+                mediaType = "image";
+                mediaMimeType = (message.image.mime_type || "image/jpeg").split(";")[0].trim();
+                text = message.image.caption?.trim() || "[Imagem recebida]";
+                if (apiToken) {
+                  const downloaded = await downloadMetaMediaAsBase64(message.image.id, apiToken);
+                  if (downloaded) {
+                    mediaBase64 = downloaded.base64;
+                    mediaMimeType = downloaded.mimeType;
+                  }
+                }
               }
 
-              if (!text.trim()) continue;
+              if (!text.trim() && !mediaType) continue;
 
-              console.log(`[WhatsApp Inbound] De: +${from} | Mensagem: "${text}"`);
+              console.log(
+                `[WhatsApp Inbound] De: +${from} | Tipo: ${message.type} | Mensagem: "${text}"`
+              );
 
               // Executar o motor conversacional do PetRec
               const botResult = await processWhatsAppMessage({
                 fromPhone: from,
                 messageText: text,
+                mediaType,
+                mediaBase64,
+                mediaMimeType,
               });
 
               console.log(
@@ -83,8 +117,6 @@ export async function POST(request: Request) {
               );
 
               // Despachar a resposta de volta ao WhatsApp do usuário via Meta Cloud API
-              const apiToken =
-                process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
               const phoneId =
                 value?.metadata?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -265,5 +297,42 @@ async function sendMetaWhatsAppMessage(params: {
   } catch (err: any) {
     console.error("[Meta API Network Error]:", err);
     return { success: false, error: err.message };
+  }
+}
+
+async function downloadMetaMediaAsBase64(
+  mediaId: string,
+  apiToken: string
+): Promise<{ base64: string; mimeType: string } | null> {
+  try {
+    const metaRes = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${apiToken}` },
+    });
+    if (!metaRes.ok) {
+      console.error("[Meta Media Info Error]:", await metaRes.text().catch(() => ""));
+      return null;
+    }
+
+    const metaInfo = await metaRes.json();
+    if (!metaInfo?.url) return null;
+
+    const fileRes = await fetch(metaInfo.url, {
+      headers: { Authorization: `Bearer ${apiToken}` },
+    });
+    if (!fileRes.ok) {
+      console.error("[Meta Media Download Error]:", fileRes.status);
+      return null;
+    }
+
+    const arrayBuf = await fileRes.arrayBuffer();
+    const base64 = Buffer.from(arrayBuf).toString("base64");
+    const rawMime = metaInfo.mime_type || fileRes.headers.get("content-type") || "application/octet-stream";
+    return {
+      base64,
+      mimeType: rawMime.split(";")[0].trim(),
+    };
+  } catch (err) {
+    console.error("[Meta Media Download Network Error]:", err);
+    return null;
   }
 }

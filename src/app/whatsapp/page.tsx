@@ -19,6 +19,8 @@ import {
   CheckCircle2,
   Trash2,
   Copy,
+  Camera,
+  Mic,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -28,6 +30,8 @@ interface ChatMessage {
   sender: "user" | "bot";
   text: string;
   time: string;
+  mediaType?: "audio" | "image";
+  mediaPreviewUrl?: string;
 }
 
 export default function WhatsAppPage() {
@@ -87,6 +91,8 @@ export default function WhatsAppPage() {
   }, []);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
 
   // Carregar status do WhatsApp do usuário logado
   useEffect(() => {
@@ -134,20 +140,34 @@ export default function WhatsAppPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Enviar mensagem no simulador
-  const handleSendMessage = async (customText?: string) => {
-    const textToSend = customText || inputText;
-    if (!textToSend.trim() || isSending) return;
+  // Enviar mensagem no simulador (texto e/ou mídia)
+  const handleSendMessage = async (
+    customText?: string,
+    mediaOpts?: {
+      mediaType: "audio" | "image";
+      mediaBase64?: string;
+      mediaMimeType?: string;
+      mediaPreviewUrl?: string;
+    }
+  ) => {
+    const textToSend = (customText ?? inputText).trim();
+    if ((!textToSend && !mediaOpts?.mediaType) || isSending) return;
+
+    const displayText =
+      textToSend ||
+      (mediaOpts?.mediaType === "audio" ? "🎙️ [Áudio enviado]" : "📸 [Imagem enviada]");
 
     const userMsg: ChatMessage = {
       id: `usr-${Date.now()}`,
       sender: "user",
-      text: textToSend,
+      text: displayText,
       time: format(new Date(), "HH:mm"),
+      mediaType: mediaOpts?.mediaType,
+      mediaPreviewUrl: mediaOpts?.mediaPreviewUrl,
     };
 
     setMessages((prev) => [...prev, userMsg]);
-    if (!customText) setInputText("");
+    if (customText === undefined) setInputText("");
     setIsSending(true);
 
     try {
@@ -158,6 +178,9 @@ export default function WhatsAppPage() {
           fromPhone: connectedPhone || phoneInput,
           messageText: textToSend,
           userId: currentUser.id,
+          mediaType: mediaOpts?.mediaType,
+          mediaBase64: mediaOpts?.mediaBase64,
+          mediaMimeType: mediaOpts?.mediaMimeType,
         }),
       });
 
@@ -199,6 +222,32 @@ export default function WhatsAppPage() {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const handleMediaFileSelect = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    type: "image" | "audio"
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : "";
+      const mimeType = file.type || (type === "image" ? "image/jpeg" : "audio/ogg");
+
+      handleSendMessage(inputText.trim() || undefined, {
+        mediaType: type,
+        mediaBase64: base64 || undefined,
+        mediaMimeType: mimeType,
+        mediaPreviewUrl: type === "image" ? dataUrl : undefined,
+      });
+
+      if (inputText.trim()) setInputText("");
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
   };
 
   // Vínculo rápido de demonstração com 1 clique
@@ -791,6 +840,69 @@ export default function WhatsAppPage() {
                 ))}
               </div>
             </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
+                <Mic className="w-3.5 h-3.5" />
+                <span>Testar Mídia, Multi-Pet &amp; Desambiguação:</span>
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSendMessage(
+                      `Hoje o ${pets.find((p: any) => p.id === activePetId)?.name || pets[0]?.name || "Rex"} deixou metade do pote e comprei 10kg de ração`,
+                      { mediaType: "audio" }
+                    )
+                  }
+                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                >
+                  🎙️ Áudio: &ldquo;Deixou metade do pote e comprei 10kg&rdquo;
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSendMessage(
+                      "Receitou Apoquel 5,4mg de 12 em 12h (08:00 e 20:00), comprei 20 comprimidos",
+                      { mediaType: "image" }
+                    )
+                  }
+                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                >
+                  📸 Foto Receita: Apoquel 12/12h
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSendMessage(
+                      "Tomou vacina V10 hoje, lote BIO992, reforço em 1 ano",
+                      { mediaType: "image" }
+                    )
+                  }
+                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                >
+                  📸 Foto Vacina: V10 lote BIO992
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSendMessage(
+                      `O ${pets[0]?.name || "Rex"} comeu 200g e a ${pets[1]?.name || "Luna"} ficou em jejum`
+                    )
+                  }
+                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                >
+                  🐾 Multi-Pet: &ldquo;{pets[0]?.name || "Rex"} comeu 200g e {pets[1]?.name || "Luna"} jejum&rdquo;
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSendMessage("Comprei ração")}
+                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                >
+                  ❓ Desambiguação: &ldquo;Comprei ração&rdquo;
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -850,6 +962,25 @@ export default function WhatsAppPage() {
                         : "bg-white text-slate-900 rounded-tl-none border border-slate-200/50"
                     }`}
                   >
+                    {msg.mediaPreviewUrl && msg.mediaType === "image" && (
+                      <img
+                        src={msg.mediaPreviewUrl}
+                        alt="Mídia enviada"
+                        className="mb-1.5 rounded-lg max-h-40 w-auto object-cover border border-black/10"
+                      />
+                    )}
+                    {msg.mediaType === "audio" && (
+                      <div className="mb-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-900/10 text-[10px] font-semibold text-emerald-900">
+                        <Mic className="w-3 h-3" />
+                        <span>Mensagem de Voz</span>
+                      </div>
+                    )}
+                    {msg.mediaType === "image" && !msg.mediaPreviewUrl && (
+                      <div className="mb-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-900/10 text-[10px] font-semibold text-indigo-900">
+                        <Camera className="w-3 h-3" />
+                        <span>Foto / Documento</span>
+                      </div>
+                    )}
                     <p>{msg.text}</p>
                     <div className="flex items-center justify-end gap-1 mt-1 text-[10px] text-slate-400">
                       <span>{msg.time}</span>
@@ -862,20 +993,52 @@ export default function WhatsAppPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Barra de Digitação */}
+          {/* Barra de Digitação + Upload de Foto/Áudio */}
           <div className="bg-[#f0f2f5] p-3 border-t border-slate-200 flex items-center gap-2">
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => handleMediaFileSelect(e, "image")}
+            />
+            <input
+              ref={audioInputRef}
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              onChange={(e) => handleMediaFileSelect(e, "audio")}
+            />
+            <button
+              type="button"
+              onClick={() => imageInputRef.current?.click()}
+              disabled={isSending}
+              className="w-9 h-9 rounded-full bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 flex items-center justify-center transition shrink-0 cursor-pointer disabled:opacity-50"
+              title="Enviar foto de receita, carteira de vacinação ou ração"
+            >
+              <Camera className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => audioInputRef.current?.click()}
+              disabled={isSending}
+              className="w-9 h-9 rounded-full bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 flex items-center justify-center transition shrink-0 cursor-pointer disabled:opacity-50"
+              title="Enviar arquivo de áudio"
+            >
+              <Mic className="w-4 h-4" />
+            </button>
             <input
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-              placeholder="Digite uma mensagem (ex: 'dei o remédio', 'estoque')..."
+              placeholder="Digite uma mensagem ou legenda e anexe foto/áudio..."
               className="flex-1 px-4 py-2.5 bg-white text-xs border border-slate-200 rounded-full focus:outline-none focus:ring-2 focus:ring-[#075e54] shadow-2xs text-slate-900"
             />
             <button
               onClick={() => handleSendMessage()}
               disabled={isSending || !inputText.trim()}
-              className="w-10 h-10 rounded-full bg-[#075e54] hover:bg-[#128c7e] text-white flex items-center justify-center transition shadow-xs disabled:opacity-50"
+              className="w-10 h-10 rounded-full bg-[#075e54] hover:bg-[#128c7e] text-white flex items-center justify-center transition shadow-xs disabled:opacity-50 cursor-pointer"
             >
               <Send className="w-4 h-4 ml-0.5" />
             </button>

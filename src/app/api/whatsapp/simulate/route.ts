@@ -8,6 +8,9 @@ export async function POST(request: Request) {
       fromPhone: body.fromPhone,
       messageText: body.messageText,
       userId: body.userId,
+      mediaType: body.mediaType,
+      mediaBase64: body.mediaBase64,
+      mediaMimeType: body.mediaMimeType,
     });
     return NextResponse.json(result);
   } catch (error: any) {
