@@ -2,6 +2,9 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import { getRolePermissions, PermissionCheck } from "@/lib/permissions";
+import { AuthModal } from "@/components/AuthModal";
+
+export type AuthModalTab = "login" | "register" | "profile";
 
 export interface DemoUser {
   id: string;
@@ -9,6 +12,8 @@ export interface DemoUser {
   email: string;
   avatar: string;
   roleDescription: string;
+  whatsappPhoneNumber?: string;
+  hasPassword?: boolean;
 }
 
 export interface PetSummary {
@@ -32,6 +37,17 @@ interface AppContextType {
   permissions: PermissionCheck;
   refreshTrigger: number;
   triggerRefresh: () => void;
+  isAuthenticated: boolean;
+  authModalOpen: boolean;
+  authModalTab: AuthModalTab;
+  openAuthModal: (tab?: AuthModalTab) => void;
+  closeAuthModal: () => void;
+  syncUsers: (
+    usersFromApi: any[],
+    updatedCurrentUser?: any,
+    authenticated?: boolean
+  ) => void;
+  logout: () => void;
 }
 
 export const DEMO_USERS: DemoUser[] = [
@@ -72,6 +88,52 @@ export const DEMO_USERS: DemoUser[] = [
   },
 ];
 
+function mapDbUserToDemoUser(u: any): DemoUser {
+  const demoMatch = DEMO_USERS.find(
+    (d) => d.email.toLowerCase() === String(u.email || "").toLowerCase()
+  );
+  const roleDesc =
+    u.roleDescription && u.roleDescription !== "Tutor(a) no PetRec"
+      ? u.roleDescription
+      : demoMatch?.roleDescription || u.roleDescription || "Tutor(a) no PetRec";
+
+  return {
+    id: u._id || u.id || demoMatch?.id || "",
+    name: u.name || demoMatch?.name || "Usuário",
+    email: u.email || demoMatch?.email || "",
+    avatar: u.avatar || demoMatch?.avatar || DEMO_USERS[0].avatar,
+    roleDescription: roleDesc,
+    whatsappPhoneNumber: u.whatsappPhoneNumber,
+    hasPassword: Boolean(u.hasPassword),
+  };
+}
+
+function mergeDbUsers(allDbUsers: any[], members: any[] = []): DemoUser[] {
+  const byEmail = new Map<string, DemoUser>();
+
+  if (Array.isArray(allDbUsers) && allDbUsers.length > 0) {
+    for (const u of allDbUsers) {
+      if (!u?.email) continue;
+      const mapped = mapDbUserToDemoUser(u);
+      byEmail.set(mapped.email.toLowerCase(), mapped);
+    }
+  }
+
+  for (const m of members) {
+    const u = m?.user;
+    if (!u?.email) continue;
+    const key = String(u.email).toLowerCase();
+    if (!byEmail.has(key)) {
+      byEmail.set(key, mapDbUserToDemoUser(u));
+    }
+  }
+
+  if (byEmail.size === 0) {
+    return DEMO_USERS;
+  }
+
+  return Array.from(byEmail.values());
+}
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
@@ -83,16 +145,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [userRole, setUserRole] = useState<string>("owner");
   const [petMembers, setPetMembers] = useState<any[]>([]);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
+  const [authModalTab, setAuthModalTab] = useState<AuthModalTab>("login");
   const isInitializedRef = useRef(false);
 
   const triggerRefresh = () => setRefreshTrigger((prev) => prev + 1);
+
+  const openAuthModal = (tab: AuthModalTab = "login") => {
+    setAuthModalTab(tab);
+    setAuthModalOpen(true);
+  };
+
+  const closeAuthModal = () => setAuthModalOpen(false);
 
   // Troca de usuário persistida
   const setCurrentUser = (user: DemoUser) => {
     setCurrentUserState(user);
     if (typeof window !== "undefined") {
       localStorage.setItem("petrec_user_email", user.email);
+      localStorage.setItem("petrec_auth_user", JSON.stringify(user));
     }
+  };
+
+  const syncUsers = (
+    usersFromApi: any[],
+    updatedCurrentUser?: any,
+    authenticated?: boolean
+  ) => {
+    const merged = mergeDbUsers(usersFromApi);
+    if (merged.length > 0) {
+      setAvailableUsers(merged);
+    }
+    if (updatedCurrentUser) {
+      const mapped = mapDbUserToDemoUser(updatedCurrentUser);
+      setCurrentUserState(mapped);
+      if (authenticated !== undefined) {
+        setIsAuthenticated(authenticated);
+      }
+      if (typeof window !== "undefined") {
+        localStorage.setItem("petrec_user_email", mapped.email);
+        localStorage.setItem("petrec_auth_user", JSON.stringify(mapped));
+      }
+    }
+  };
+
+  const logout = () => {
+    setIsAuthenticated(false);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("petrec_auth_user");
+      localStorage.removeItem("petrec_user_email");
+    }
+    setCurrentUserState({
+      id: "",
+      name: "Visitante",
+      email: "visitante@petrec.app",
+      avatar: DEMO_USERS[0].avatar,
+      roleDescription: "Desconectado — Entre ou Cadastre-se",
+    });
+    setAuthModalTab("login");
+    setAuthModalOpen(true);
   };
 
   // Troca de pet ativo persistida
@@ -109,15 +221,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         let initialPetId = "";
         let initialUserEmail = "";
+        let savedAuthUser: DemoUser | null = null;
 
         if (typeof window !== "undefined") {
           initialPetId = localStorage.getItem("petrec_active_pet_id") || "";
           initialUserEmail = localStorage.getItem("petrec_user_email") || "";
+          const rawAuth = localStorage.getItem("petrec_auth_user");
+          if (rawAuth) {
+            try {
+              savedAuthUser = JSON.parse(rawAuth);
+              if (savedAuthUser?.id) {
+                setIsAuthenticated(true);
+              }
+            } catch {
+              savedAuthUser = null;
+            }
+          }
         }
 
-        const [dashRes, tutoresRes] = await Promise.all([
+        const [dashRes, authRes] = await Promise.all([
           fetch(`/api/dashboard${initialPetId ? `?petId=${initialPetId}` : ""}`),
-          fetch(`/api/tutores${initialPetId ? `?petId=${initialPetId}` : ""}`).catch(() => null),
+          fetch("/api/auth").catch(() => null),
         ]);
 
         let data: any = null;
@@ -128,19 +252,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             data = null;
           }
         }
+
         let allDbUsers: any[] = [];
-        if (tutoresRes && tutoresRes.ok) {
+        if (authRes && authRes.ok) {
           try {
-            const tutoresData = await tutoresRes.json();
-            allDbUsers = tutoresData.allUsers || [];
+            const authData = await authRes.json();
+            allDbUsers = authData.users || [];
           } catch {
             allDbUsers = [];
+          }
+        } else {
+          const tutoresRes = await fetch(
+            `/api/tutores${initialPetId ? `?petId=${initialPetId}` : ""}`
+          ).catch(() => null);
+          if (tutoresRes && tutoresRes.ok) {
+            try {
+              const tutoresData = await tutoresRes.json();
+              allDbUsers = tutoresData.allUsers || [];
+            } catch {
+              allDbUsers = [];
+            }
           }
         }
 
         let fetchedPets: PetSummary[] = data?.pets || [];
 
-        // Fallback: se o dashboard não retornou pets (ex: Vercel sem SQLite), busca direto da API Convex de pets
         if (fetchedPets.length === 0) {
           try {
             const petsRes = await fetch("/api/pets");
@@ -164,7 +300,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
         setPets(fetchedPets);
 
-        // Resolver pet ativo preservando o pet salvo ou primeiro disponível
         const resolvedPetId =
           initialPetId && fetchedPets.some((p) => p.id === initialPetId)
             ? initialPetId
@@ -178,21 +313,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const members = data?.activePet?.members || [];
         setPetMembers(members);
 
-        // Mapear IDs reais dos usuários cadastrados no banco
-        const mappedUsers = DEMO_USERS.map((du) => {
-          const memberFound = members.find((m: any) => m.user?.email === du.email);
-          if (memberFound) return { ...du, id: memberFound.user._id || memberFound.user.id };
-          const userFound = allDbUsers.find((u: any) => u.email === du.email);
-          if (userFound) return { ...du, id: userFound._id || userFound.id };
-          return du;
-        });
-
+        const mappedUsers = mergeDbUsers(allDbUsers, members);
         setAvailableUsers(mappedUsers);
 
-        // Resolver usuário ativo preservando o salvo ou padrão (Denis)
-        const targetEmail = initialUserEmail || mappedUsers[0]?.email;
+        // Resolver usuário ativo preservando o salvo ou padrão (primeiro do banco)
+        const targetEmail =
+          savedAuthUser?.email || initialUserEmail || mappedUsers[0]?.email;
         const resolvedUser =
-          mappedUsers.find((u) => u.email === targetEmail) || mappedUsers[0];
+          mappedUsers.find(
+            (u) => u.email.toLowerCase() === String(targetEmail).toLowerCase()
+          ) || mappedUsers[0];
 
         if (resolvedUser) {
           setCurrentUserState(resolvedUser);
@@ -210,16 +340,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     init();
   }, []);
 
-  // 2. Atualizar dados do pet ativo quando activePetId mudar ou refresh for acionado
+  // 2. Atualizar dados do pet ativo e usuários quando activePetId mudar ou refresh for acionado
   useEffect(() => {
     if (!isInitializedRef.current) return;
 
     async function updatePetMembers() {
       try {
-        const res = await fetch(`/api/dashboard${activePetId ? `?petId=${activePetId}` : ""}`).catch(() => null);
+        const [res, authRes] = await Promise.all([
+          fetch(`/api/dashboard${activePetId ? `?petId=${activePetId}` : ""}`).catch(
+            () => null
+          ),
+          fetch("/api/auth").catch(() => null),
+        ]);
+
+        let latestMembers: any[] = [];
         if (res && res.ok) {
           const data = await res.json();
           if (data.activePet?.members) {
+            latestMembers = data.activePet.members;
             setPetMembers(data.activePet.members);
           }
           if (data.pets && data.pets.length > 0) {
@@ -229,7 +367,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             setActivePetIdState(data.activePet.id);
           }
         } else {
-          // Atualiza lista via API de pets (Convex)
           const petsRes = await fetch("/api/pets").catch(() => null);
           if (petsRes && petsRes.ok) {
             const petsData = await petsRes.json();
@@ -247,6 +384,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
+
+        if (authRes && authRes.ok) {
+          const authData = await authRes.json();
+          if (Array.isArray(authData.users)) {
+            const merged = mergeDbUsers(authData.users, latestMembers);
+            setAvailableUsers(merged);
+            setCurrentUserState((prev) => {
+              if (!prev.email || prev.id === "") return prev;
+              const updatedSelf = merged.find(
+                (u) => u.email.toLowerCase() === prev.email.toLowerCase()
+              );
+              return updatedSelf || prev;
+            });
+          }
+        }
       } catch (err) {
         console.error("Erro ao atualizar membros do pet:", err);
       }
@@ -257,9 +409,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // 3. Determinar papel e permissões do usuário atual no pet ativo
   useEffect(() => {
-    const member = petMembers.find((m: any) => m.user?.email === currentUser.email);
+    const member = petMembers.find(
+      (m: any) =>
+        m.user?.email?.toLowerCase() === currentUser.email?.toLowerCase()
+    );
     if (member?.role) {
       setUserRole(member.role);
+    } else if (!currentUser.id) {
+      setUserRole("viewer");
     } else {
       // Regras de fallback para demonstração
       if (
@@ -277,7 +434,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setUserRole("viewer");
       }
     }
-
   }, [currentUser, petMembers, activePetId]);
 
   const permissions = getRolePermissions(userRole);
@@ -296,9 +452,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         permissions,
         refreshTrigger,
         triggerRefresh,
+        isAuthenticated,
+        authModalOpen,
+        authModalTab,
+        openAuthModal,
+        closeAuthModal,
+        syncUsers,
+        logout,
       }}
     >
       {children}
+      <AuthModal
+        isOpen={authModalOpen}
+        initialTab={authModalTab}
+        onClose={closeAuthModal}
+      />
     </AppContext.Provider>
   );
 }

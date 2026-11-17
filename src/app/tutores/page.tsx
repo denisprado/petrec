@@ -34,6 +34,7 @@ export default function TutoresPage() {
   // Modal Convite
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteType, setInviteType] = useState<"family" | "professional">("family");
+  const [inviteName, setInviteName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("caregiver");
   const [inviteAccessDays, setInviteAccessDays] = useState<string>("30");
@@ -105,6 +106,7 @@ export default function TutoresPage() {
         body: JSON.stringify({
           petId: activePetId,
           invitedEmail: inviteEmail,
+          invitedName: inviteName.trim() || undefined,
           invitedById: currentUser.id,
           role: finalRole,
           accessDays: finalAccessDays,
@@ -114,9 +116,11 @@ export default function TutoresPage() {
 
       const json = await res.json();
       if (res.ok) {
-        setFeedback(`✓ Convite gerado para ${inviteEmail}!`);
+        setFeedback(`✓ Convite gerado e vínculo criado para ${inviteName.trim() || inviteEmail}!`);
         setTimeout(() => setFeedback(null), 4000);
         setCreatedInvite(json.invitation);
+        setInviteName("");
+        setInviteEmail("");
         triggerRefresh();
       } else {
         alert(json.error || "Erro ao convidar tutor ou profissional");
@@ -614,6 +618,25 @@ export default function TutoresPage() {
 
             {!createdInvite ? (
               <form onSubmit={handleSendInvite} className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    {inviteType === "professional"
+                      ? "Nome do Profissional / Clínica"
+                      : "Nome do Convidado"}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={
+                      inviteType === "professional"
+                        ? "ex: Dra. Camila Ramos"
+                        : "ex: Ana Silva"
+                    }
+                    value={inviteName}
+                    onChange={(e) => setInviteName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
                 <div>
                   <label className="text-xs font-bold text-slate-700 block mb-1">
                     {inviteType === "professional"

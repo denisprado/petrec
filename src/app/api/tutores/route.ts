@@ -7,12 +7,22 @@ const convex = new ConvexHttpClient(
     "https://robust-bullfrog-290.convex.cloud"
 );
 
+function extractCleanError(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : String(error || "");
+  if (!raw) return fallback;
+  const uncaughtMatch = raw.match(/Uncaught Error:\s*([^\n\r]+)/i);
+  if (uncaughtMatch?.[1]) {
+    return uncaughtMatch[1].replace(/\s+at\s+handler.*$/i, "").trim();
+  }
+  return raw.split("\n")[0].trim() || fallback;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
 
   try {
-    const allUsers = await convex.query(api.users.list);
+    const allUsers = await convex.query(api.users.list, {});
 
     if (!petId) {
       return NextResponse.json({ members: [], invitations: [], allUsers });
@@ -20,18 +30,33 @@ export async function GET(request: Request) {
 
     const pet = await convex.query(api.pets.getById, { petId: petId as any });
     const members = (pet as any)?.members || [];
+    const invitations = (pet as any)?.invitations || [];
 
-    return NextResponse.json({ members, invitations: [], allUsers });
+    return NextResponse.json({ members, invitations, allUsers });
   } catch (error: any) {
     console.error("GET /api/tutores error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: extractCleanError(error, "Erro ao buscar tutores.") },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { petId, invitedEmail, role = "caregiver" } = body;
+    const {
+      petId,
+      invitedEmail,
+      invitedName,
+      invitedById,
+      role = "caregiver",
+      accessDays,
+      canPrescribe,
+      crmv,
+      clinicName,
+      specialties,
+    } = body;
 
     if (!petId || !invitedEmail) {
       return NextResponse.json(
@@ -40,19 +65,69 @@ export async function POST(request: Request) {
       );
     }
 
-    const allUsers = await convex.query(api.users.list);
-    let user = allUsers.find((u: any) => u.email === invitedEmail);
+    const validInvitedById =
+      invitedById && typeof invitedById === "string" && invitedById.length > 10
+        ? (invitedById as any)
+        : undefined;
+
+    const result = await convex.mutation(api.users.inviteOrAddMember, {
+      petId: petId as any,
+      invitedEmail: String(invitedEmail),
+      invitedName: invitedName ? String(invitedName) : undefined,
+      invitedById: validInvitedById,
+      role: String(role),
+      accessDays:
+        typeof accessDays === "number" && Number.isFinite(accessDays)
+          ? accessDays
+          : undefined,
+      canPrescribe: typeof canPrescribe === "boolean" ? canPrescribe : undefined,
+      crmv: crmv ? String(crmv) : undefined,
+      clinicName: clinicName ? String(clinicName) : undefined,
+      specialties: specialties ? String(specialties) : undefined,
+    });
 
     return NextResponse.json({
       success: true,
+      invitation: result.invitation,
+      member: result.member,
+      user: result.user,
       message: `Tutor ${invitedEmail} vinculado com sucesso!`,
     });
   } catch (error: any) {
     console.error("POST /api/tutores error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: extractCleanError(error, "Erro ao vincular tutor.") },
+      { status: 400 }
+    );
   }
 }
 
 export async function DELETE(request: Request) {
-  return NextResponse.json({ success: true });
+  try {
+    const { searchParams } = new URL(request.url);
+    const petId = searchParams.get("petId");
+    const memberId = searchParams.get("memberId");
+    const invitationId = searchParams.get("invitationId");
+
+    if (!memberId && !invitationId) {
+      return NextResponse.json(
+        { error: "Informe memberId ou invitationId para remover." },
+        { status: 400 }
+      );
+    }
+
+    await convex.mutation(api.users.removeMemberOrInvite, {
+      petId: petId ? (petId as any) : undefined,
+      memberId: memberId ? (memberId as any) : undefined,
+      invitationId: invitationId ? (invitationId as any) : undefined,
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("DELETE /api/tutores error:", error);
+    return NextResponse.json(
+      { error: extractCleanError(error, "Erro ao remover acesso.") },
+      { status: 400 }
+    );
+  }
 }

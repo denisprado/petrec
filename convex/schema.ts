@@ -9,6 +9,9 @@ export default defineSchema({
     whatsappPhoneNumber: v.optional(v.string()),
     whatsappVerifiedAt: v.optional(v.number()),
     timezone: v.optional(v.string()),
+    passwordHash: v.optional(v.string()),
+    roleDescription: v.optional(v.string()),
+    createdAt: v.optional(v.number()),
   })
     .index("by_email", ["email"])
     .index("by_whatsapp", ["whatsappPhoneNumber"]),
@@ -35,10 +38,29 @@ export default defineSchema({
     professionalType: v.optional(v.string()),
     crmv: v.optional(v.string()),
     specialties: v.optional(v.string()),
+    accessExpiresAt: v.optional(v.string()),
+    canPrescribe: v.optional(v.boolean()),
+    clinicName: v.optional(v.string()),
   })
     .index("by_pet", ["petId"])
     .index("by_user", ["userId"])
     .index("by_pet_and_user", ["petId", "userId"]),
+
+  petInvitations: defineTable({
+    petId: v.id("pets"),
+    invitedEmail: v.string(),
+    invitedName: v.optional(v.string()),
+    invitedById: v.optional(v.id("users")),
+    role: v.string(),
+    token: v.string(),
+    accessDays: v.optional(v.number()),
+    canPrescribe: v.optional(v.boolean()),
+    createdAt: v.string(),
+    acceptedAt: v.optional(v.string()),
+  })
+    .index("by_pet", ["petId"])
+    .index("by_email", ["invitedEmail"])
+    .index("by_token", ["token"]),
 
   medications: defineTable({
     petId: v.id("pets"),

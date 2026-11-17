@@ -36,15 +36,45 @@ export const getById = query({
     const membersWithUser = await Promise.all(
       members.map(async (m) => {
         const user = await ctx.db.get(m.userId);
+        if (!user) {
+          return {
+            ...m,
+            id: m._id,
+            user: null,
+          };
+        }
+        const { passwordHash: _passwordHash, ...safeUser } = user as any;
+        const professionalProfile =
+          m.crmv || m.clinicName || m.specialties
+            ? {
+                registerNumber: m.crmv,
+                clinicName: m.clinicName,
+                specialties: m.specialties,
+                isVerified: true,
+              }
+            : null;
         return {
           ...m,
-          user,
+          id: m._id,
+          user: {
+            ...safeUser,
+            id: user._id,
+            professionalProfile,
+          },
         };
       })
     );
+    const invitations = await ctx.db
+      .query("petInvitations")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
     return {
       ...pet,
-      members: membersWithUser,
+      members: membersWithUser.filter((m) => m.user !== null),
+      invitations: invitations.map((inv) => ({
+        ...inv,
+        id: inv._id,
+      })),
     };
   },
 });
@@ -194,12 +224,18 @@ export const remove = mutation({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    // 1. Deletar membros
+    // 1. Deletar membros e convites
     const members = await ctx.db
       .query("petMembers")
       .withIndex("by_pet", (q) => q.eq("petId", args.petId))
       .collect();
     for (const m of members) await ctx.db.delete(m._id);
+
+    const invitations = await ctx.db
+      .query("petInvitations")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+    for (const inv of invitations) await ctx.db.delete(inv._id);
 
     // 2. Deletar medicamentos e agendamentos
     const meds = await ctx.db
