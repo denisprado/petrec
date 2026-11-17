@@ -29,6 +29,7 @@ import Link from "next/link";
 import { format, isValid } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { PetModal } from "@/components/PetModal";
+import { LandingPage } from "@/components/LandingPage";
 
 function safeFormat(dateVal: any, formatPattern: string, options?: any): string {
   if (!dateVal) return "";
@@ -50,6 +51,9 @@ export default function DashboardPage() {
     refreshTrigger,
     triggerRefresh,
     permissions,
+    isAuthenticated,
+    isAuthLoading,
+    showLandingPage,
   } = useApp();
 
   const [loading, setLoading] = useState(true);
@@ -70,16 +74,21 @@ export default function DashboardPage() {
   const [skipMedReason, setSkipMedReason] = useState<string>("Vomitou / recusou o medicamento");
   const [customSkipReason, setCustomSkipReason] = useState<string>("");
 
-  // Carregar dados agregados do dashboard
+  // Carregar dados agregados do dashboard apenas quando autenticado
   useEffect(() => {
     let isCancelled = false;
 
     async function loadDashboard() {
+      if (!isAuthenticated || !currentUser?.id) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
         const queryParams = new URLSearchParams();
+        queryParams.set("userId", currentUser.id);
         if (activePetId) queryParams.set("petId", activePetId);
-        if (currentUser?.id) queryParams.set("userId", currentUser.id);
 
         const res = await fetch(`/api/dashboard?${queryParams.toString()}`);
         if (res.ok) {
@@ -105,7 +114,7 @@ export default function DashboardPage() {
     return () => {
       isCancelled = true;
     };
-  }, [activePetId, currentUser?.id, refreshTrigger]);
+  }, [activePetId, currentUser?.id, isAuthenticated, refreshTrigger]);
 
   // Ação de administrar medicamento hoje
   const handleAdminister = async (
@@ -246,6 +255,19 @@ export default function DashboardPage() {
       console.error(err);
     }
   };
+
+  if (isAuthLoading) {
+    return (
+      <div className="max-w-6xl mx-auto px-4 py-16 text-center">
+        <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600 mb-3" />
+        <p className="text-slate-500 font-medium text-sm">Verificando sessão...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || showLandingPage) {
+    return <LandingPage />;
+  }
 
   if (loading && !data) {
     return (

@@ -12,6 +12,7 @@ export const listByUser = query({
     const petsWithRoles = await Promise.all(
       memberships.map(async (m) => {
         const pet = await ctx.db.get(m.petId);
+        if (!pet) return null;
         return {
           ...pet,
           role: m.role,
@@ -20,7 +21,7 @@ export const listByUser = query({
       })
     );
 
-    return petsWithRoles.filter((p) => p !== null);
+    return petsWithRoles.filter((p): p is NonNullable<typeof p> => p !== null);
   },
 });
 
@@ -105,29 +106,20 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const { userId: explicitUserId, userEmail, ...petData } = args;
 
-    // Resolver usuário vinculado: por ID explícito, por email, ou primeiro usuário
+    // Resolver usuário vinculado: por ID explícito ou por email
     let userId = explicitUserId;
     if (!userId && userEmail) {
+      const normalizedEmail = userEmail.toLowerCase().trim();
       const user = await ctx.db
         .query("users")
-        .withIndex("by_email", (q) => q.eq("email", userEmail))
+        .withIndex("by_email", (q) => q.eq("email", normalizedEmail))
         .first();
       if (user) {
         userId = user._id;
       }
     }
     if (!userId) {
-      const firstUser = await ctx.db.query("users").first();
-      if (firstUser) {
-        userId = firstUser._id;
-      } else {
-        userId = await ctx.db.insert("users", {
-          name: "Denis Forigo",
-          email: "denis@petrec.app",
-          avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-          timezone: "America/Sao_Paulo",
-        });
-      }
+      throw new Error("Usuário autenticado é obrigatório para cadastrar um pet.");
     }
 
     // 1. Criar o Pet

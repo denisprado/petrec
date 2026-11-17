@@ -15,7 +15,29 @@ export async function GET(request: Request) {
   const petId = searchParams.get("petId");
 
   try {
-    const allPets = await convex.query(api.pets.listAll);
+    if (!userId) {
+      return NextResponse.json({
+        pets: [],
+        activePet: null,
+        today: { administrations: [], appointments: [] },
+        attention: {
+          criticalStock: [],
+          attentionStock: [],
+          upcomingVaccines: [],
+          pendingPrescriptions: [],
+          pendingTasksCount: 0,
+        },
+        purchases: { pendingList: [], completedList: [] },
+        health: { vaccines: [], upcomingAppointments: [] },
+        inventory: [],
+        medications: [],
+        recentActivities: [],
+      });
+    }
+
+    const allPets = await convex.query(api.pets.listByUser, {
+      userId: userId as any,
+    });
 
     if (allPets.length === 0) {
       return NextResponse.json({
@@ -38,7 +60,26 @@ export async function GET(request: Request) {
     }
 
     const activePetBasic = (petId ? allPets.find((p) => p._id === petId) : null) || allPets[0];
-    const activePetId = activePetBasic._id;
+    const activePetId = activePetBasic?._id;
+    if (!activePetId) {
+      return NextResponse.json({
+        pets: [],
+        activePet: null,
+        today: { administrations: [], appointments: [] },
+        attention: {
+          criticalStock: [],
+          attentionStock: [],
+          upcomingVaccines: [],
+          pendingPrescriptions: [],
+          pendingTasksCount: 0,
+        },
+        purchases: { pendingList: [], completedList: [] },
+        health: { vaccines: [], upcomingAppointments: [] },
+        inventory: [],
+        medications: [],
+        recentActivities: [],
+      });
+    }
 
     // Sincronizar rotinas e administrações de hoje
     try {

@@ -2,8 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AppProvider } from "@/context/AppContext";
 import { ConvexClientProvider } from "@/providers/ConvexClientProvider";
-import { Header } from "@/components/Header";
-import { BottomNav } from "@/components/BottomNav";
+import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
   title: "PetRec — Assistente de Cuidados e Estoque Inteligente do Pet",
@@ -21,9 +20,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-slate-50 text-slate-900 flex flex-col antialiased">
         <ConvexClientProvider>
           <AppProvider>
-            <Header />
-            <BottomNav />
-            <main className="flex-1 pb-20 md:pb-12">{children}</main>
+            <AppShell>{children}</AppShell>
           </AppProvider>
         </ConvexClientProvider>
       </body>

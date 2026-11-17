@@ -51,7 +51,6 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
   const [regPassword, setRegPassword] = useState("");
   const [regPhone, setRegPhone] = useState("");
   const [regRoleDesc, setRegRoleDesc] = useState("Tutor(a) Familiar");
-  const [regLinkRole, setRegLinkRole] = useState("co_owner");
 
   // Profile fields
   const [profName, setProfName] = useState("");
@@ -138,7 +137,6 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
           password: regPassword,
           whatsappPhoneNumber: regPhone || undefined,
           roleDescription: regRoleDesc,
-          linkToExistingPetsRole: regLinkRole || undefined,
         }),
       });
       const data = await res.json();
@@ -308,9 +306,9 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
           {activeTab === "login" && (
             <form onSubmit={handleLogin} className="space-y-3.5">
               <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-100 text-[11px] text-indigo-800 leading-relaxed">
-                <strong>Primeiro acesso de conta demo ou convidada?</strong> Se você ainda não
-                definiu uma senha para o seu e-mail, digite a senha desejada abaixo para ativá-la
-                automaticamente.
+                <strong>Recebeu um convite para cuidar de um pet?</strong> Se você foi convidado(a)
+                por e-mail e ainda não definiu uma senha, informe o e-mail e a senha desejada
+                abaixo para ativar seu acesso.
               </div>
 
               <div>
@@ -436,23 +434,6 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">
-                  Vínculo com os Pets Existentes da Família
-                </label>
-                <select
-                  value={regLinkRole}
-                  onChange={(e) => setRegLinkRole(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-medium border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white"
-                >
-                  <option value="co_owner">Coproprietário(a) — Aprova prescrições e compras</option>
-                  <option value="caregiver">Cuidador(a) — Registra rotinas e doses</option>
-                  <option value="owner">Proprietário(a) Principal — Controle total</option>
-                  <option value="viewer">Visualizador(a) — Somente leitura</option>
-                  <option value="">Não vincular (apenas criar meus próprios pets)</option>
-                </select>
               </div>
 
               <button

@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useApp } from "@/context/AppContext";
 import {
   LayoutDashboard,
   Boxes,
@@ -15,6 +16,11 @@ import {
 
 export function BottomNav() {
   const pathname = usePathname();
+  const { isAuthenticated, isAuthLoading, setShowLandingPage } = useApp();
+
+  if (isAuthLoading || !isAuthenticated) {
+    return null;
+  }
 
   const navItems = [
     { href: "/", label: "Hoje", icon: LayoutDashboard },
@@ -38,6 +44,7 @@ export function BottomNav() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => setShowLandingPage(false)}
                 className={`flex items-center gap-2 py-3 text-sm font-semibold border-b-2 transition ${
                   isActive
                     ? "border-emerald-600 text-emerald-700"
@@ -62,6 +69,7 @@ export function BottomNav() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => setShowLandingPage(false)}
                 className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition ${
                   isActive
                     ? "text-emerald-600 font-bold"

@@ -777,7 +777,12 @@ export default function WhatsAppPage() {
             </div>
 
             <div className="space-y-1 text-slate-400 text-[11px]">
-              <div>• Pet em Foco: <strong className="text-white">{pets[0]?.name || "Rex"}</strong></div>
+              <div>
+                • Pet em Foco:{" "}
+                <strong className="text-white">
+                  {pets.find((p) => p.id === activePetId)?.name || pets[0]?.name || "Nenhum pet"}
+                </strong>
+              </div>
               <div>• Tutor Remetente: <strong className="text-white">{currentUser.name}</strong></div>
               <div>• Permissão RBAC: <strong className="text-white">Validada automaticamente</strong></div>
               {lastAction && (

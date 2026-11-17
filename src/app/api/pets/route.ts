@@ -26,13 +26,11 @@ export async function GET(request: Request) {
         const pets = await convex.query(api.pets.listByUser, { userId: userId as any });
         return NextResponse.json({ pets });
       } catch {
-        const pets = await convex.query(api.pets.listAll);
-        return NextResponse.json({ pets });
+        return NextResponse.json({ pets: [] });
       }
     }
 
-    const pets = await convex.query(api.pets.listAll);
-    return NextResponse.json({ pets });
+    return NextResponse.json({ pets: [] });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -80,6 +78,13 @@ export async function POST(request: Request) {
       }
     }
 
+    if (!userId && !userEmail) {
+      return NextResponse.json(
+        { error: "É necessário estar autenticado para cadastrar um pet." },
+        { status: 401 }
+      );
+    }
+
     const pet = await convex.mutation(api.pets.create, {
       name: name.trim(),
       species,
@@ -91,7 +96,8 @@ export async function POST(request: Request) {
       color: color ? color.trim() : undefined,
       microchip: microchip ? microchip.trim() : undefined,
       notes: notes ? notes.trim() : undefined,
-      userEmail: userEmail || "denis@petrec.app",
+      userId: userId ? (userId as any) : undefined,
+      userEmail: userEmail || undefined,
     });
 
     return NextResponse.json({

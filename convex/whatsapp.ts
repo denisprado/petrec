@@ -14,10 +14,47 @@ export const getSession = query({
 export const getContextByPhone = query({
   args: { phone: v.string() },
   handler: async (ctx, args) => {
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_whatsapp", (q) => q.eq("whatsappPhoneNumber", args.phone))
-      .first();
+    const rawDigits = args.phone.replace(/[^\d]/g, "");
+    const candidates = Array.from(
+      new Set(
+        [
+          args.phone,
+          rawDigits ? `+${rawDigits}` : "",
+          rawDigits,
+          rawDigits.startsWith("55") && rawDigits.length >= 12
+            ? rawDigits.slice(2)
+            : "",
+          !rawDigits.startsWith("55") && rawDigits.length >= 10 && rawDigits.length <= 11
+            ? `55${rawDigits}`
+            : "",
+          !rawDigits.startsWith("55") && rawDigits.length >= 10 && rawDigits.length <= 11
+            ? `+55${rawDigits}`
+            : "",
+        ].filter(Boolean)
+      )
+    );
+
+    let user = null;
+    for (const candidate of candidates) {
+      user = await ctx.db
+        .query("users")
+        .withIndex("by_whatsapp", (q) => q.eq("whatsappPhoneNumber", candidate))
+        .first();
+      if (user) break;
+    }
+
+    // Fallback para variação com/sem 9o dígito no Brasil
+    if (!user && rawDigits.startsWith("55") && rawDigits.length === 13) {
+      const without9 = `+${rawDigits.slice(0, 4)}${rawDigits.slice(5)}`;
+      const localWithout9 = `${rawDigits.slice(2, 4)}${rawDigits.slice(5)}`;
+      for (const variant of [without9, localWithout9]) {
+        user = await ctx.db
+          .query("users")
+          .withIndex("by_whatsapp", (q) => q.eq("whatsappPhoneNumber", variant))
+          .first();
+        if (user) break;
+      }
+    }
 
     if (!user) return null;
 

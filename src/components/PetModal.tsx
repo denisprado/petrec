@@ -142,7 +142,8 @@ export function PetModal({
           microchip: microchip.trim() || undefined,
           notes: notes.trim() || undefined,
           routineMode: routineMode || undefined,
-          userEmail: currentUser?.email,
+          userId: currentUser?.id ? (currentUser.id as Id<"users">) : undefined,
+          userEmail: currentUser?.email || undefined,
         });
 
         if (pet) {

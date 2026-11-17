@@ -1,137 +1,210 @@
 import { mutation } from "./_generated/server";
 
-export const seed = mutation({
+const MOCK_PET_NAMES = new Set(["Rex", "Luna", "Thor"]);
+
+export const purgeMockData = mutation({
+  args: {},
   handler: async (ctx) => {
-    // 1. Criar Usuários
-    const denisId = await ctx.db.insert("users", {
-      name: "Denis Forigo",
-      email: "denis@petrec.app",
-      avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-      whatsappPhoneNumber: "+5519988887777",
-      whatsappVerifiedAt: Date.now(),
-      timezone: "America/Sao_Paulo",
-    });
+    const allUsers = await ctx.db.query("users").collect();
+    const realUser = allUsers.find(
+      (u) => u.email.toLowerCase().trim() === "denisforigo@gmail.com"
+    );
 
-    const anaId = await ctx.db.insert("users", {
-      name: "Ana Silva",
-      email: "ana@petrec.app",
-      avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
-      timezone: "America/Sao_Paulo",
-    });
+    const mockUsers = allUsers.filter((u) =>
+      u.email.toLowerCase().trim().endsWith("@petrec.app")
+    );
 
-    const joaoId = await ctx.db.insert("users", {
-      name: "João Cuidador",
-      email: "joao@petrec.app",
-      avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
-      timezone: "America/Sao_Paulo",
-    });
+    let removedUsersCount = 0;
+    let removedMembersCount = 0;
+    let removedPetsCount = 0;
 
-    const camilaId = await ctx.db.insert("users", {
-      name: "Dra. Camila Ramos",
-      email: "camila.vet@petrec.app",
-      avatar: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=150&auto=format&fit=crop&q=80",
-      timezone: "America/Sao_Paulo",
-    });
+    // 1. Garantir WhatsApp normalizado para o usuário real antes de remover os mocks
+    if (realUser) {
+      const digits = (realUser.whatsappPhoneNumber || "").replace(/[^\d]/g, "");
+      let normalizedPhone = realUser.whatsappPhoneNumber;
+      if (digits.length >= 10 && digits.length <= 11 && !digits.startsWith("55")) {
+        normalizedPhone = `+55${digits}`;
+      } else if (digits.length >= 12 && !realUser.whatsappPhoneNumber?.startsWith("+")) {
+        normalizedPhone = `+${digits}`;
+      }
+      if (normalizedPhone && normalizedPhone !== realUser.whatsappPhoneNumber) {
+        await ctx.db.patch(realUser._id, {
+          whatsappPhoneNumber: normalizedPhone,
+          whatsappVerifiedAt: realUser.whatsappVerifiedAt || Date.now(),
+        });
+      } else if (realUser.whatsappPhoneNumber && !realUser.whatsappVerifiedAt) {
+        await ctx.db.patch(realUser._id, {
+          whatsappVerifiedAt: Date.now(),
+        });
+      }
 
-    const carlosId = await ctx.db.insert("users", {
-      name: "Carlos Sitter",
-      email: "carlos.sitter@petrec.app",
-      avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
-      timezone: "America/Sao_Paulo",
-    });
+      const realSession = await ctx.db
+        .query("whatsappSessions")
+        .withIndex("by_user", (q) => q.eq("userId", realUser._id))
+        .first();
+      if (!realSession) {
+        const realMemberships = await ctx.db
+          .query("petMembers")
+          .withIndex("by_user", (q) => q.eq("userId", realUser._id))
+          .collect();
+        const firstRealPetId = realMemberships[0]?.petId;
+        await ctx.db.insert("whatsappSessions", {
+          userId: realUser._id,
+          currentPetId: firstRealPetId,
+          state: "IDLE",
+        });
+      }
+    }
 
-    // 2. Criar Pets
-    const rexId = await ctx.db.insert("pets", {
-      name: "Rex",
-      species: "Cão",
-      breed: "Golden Retriever",
-      sex: "Macho",
-      birthDate: "2021-04-12",
-      weight: 32.5,
-      photo: "https://images.unsplash.com/photo-1552053831-71594a27632d?w=500&auto=format&fit=crop&q=80",
-      color: "Dourado",
-      microchip: "981098109810981",
-      notes: "Golden muito dócil, alérgico a pulgas (DAPP) e com displasia leve de quadril.",
-    });
+    // 2. Remover sessões, tokens, vínculos e registros dos usuários mockados (@petrec.app)
+    for (const mu of mockUsers) {
+      const memberships = await ctx.db
+        .query("petMembers")
+        .withIndex("by_user", (q) => q.eq("userId", mu._id))
+        .collect();
+      for (const m of memberships) {
+        await ctx.db.delete(m._id);
+        removedMembersCount++;
+      }
 
-    const lunaId = await ctx.db.insert("pets", {
-      name: "Luna",
-      species: "Gato",
-      breed: "Siamês",
-      sex: "Fêmea",
-      birthDate: "2022-08-20",
-      weight: 4.2,
-      photo: "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=500&auto=format&fit=crop&q=80",
-      color: "Seal Point",
-      notes: "Gata tranquila, castrada, alimentação controlada para evitar ganho de peso.",
-    });
+      const sessions = await ctx.db
+        .query("whatsappSessions")
+        .withIndex("by_user", (q) => q.eq("userId", mu._id))
+        .collect();
+      for (const s of sessions) await ctx.db.delete(s._id);
 
-    const thorId = await ctx.db.insert("pets", {
-      name: "Thor",
-      species: "Cão",
-      breed: "Bulldog Francês",
-      sex: "Macho",
-      birthDate: "2023-01-15",
-      weight: 12.0,
-      photo: "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?w=500&auto=format&fit=crop&q=80",
-      color: "Fulvo",
-      notes: "Bulldog brincalhão, sensibilidade gástrica.",
-    });
+      const tokens = await ctx.db
+        .query("whatsappPairingTokens")
+        .withIndex("by_user", (q) => q.eq("userId", mu._id))
+        .collect();
+      for (const t of tokens) await ctx.db.delete(t._id);
 
-    // 3. Vincular Membros aos Pets (RBAC)
-    // Rex
-    await ctx.db.insert("petMembers", { petId: rexId, userId: denisId, role: "owner", isPrimary: true });
-    await ctx.db.insert("petMembers", { petId: rexId, userId: anaId, role: "co_owner", isPrimary: false });
-    await ctx.db.insert("petMembers", { petId: rexId, userId: joaoId, role: "caregiver", isPrimary: false });
-    await ctx.db.insert("petMembers", {
-      petId: rexId,
-      userId: camilaId,
-      role: "vet_limited",
-      isPrimary: false,
-      professionalType: "vet",
-      crmv: "CRMV-SP 45.890",
-      specialties: "Dermatologia Veterinária",
-    });
-    await ctx.db.insert("petMembers", {
-      petId: rexId,
-      userId: carlosId,
-      role: "caregiver_pro",
-      isPrimary: false,
-      professionalType: "sitter",
-      specialties: "Passeador e Hospedagem",
-    });
+      await ctx.db.delete(mu._id);
+      removedUsersCount++;
+    }
 
-    // Luna
-    await ctx.db.insert("petMembers", { petId: lunaId, userId: denisId, role: "owner", isPrimary: true });
-    await ctx.db.insert("petMembers", { petId: lunaId, userId: anaId, role: "co_owner", isPrimary: false });
+    // 3. Remover convites antigos ligados a e-mails @petrec.app
+    const allInvitations = await ctx.db.query("petInvitations").collect();
+    for (const inv of allInvitations) {
+      if (inv.invitedEmail.toLowerCase().trim().endsWith("@petrec.app")) {
+        await ctx.db.delete(inv._id);
+      }
+    }
 
-    // Thor
-    await ctx.db.insert("petMembers", { petId: thorId, userId: denisId, role: "owner", isPrimary: true });
+    // 4. Remover pets mockados de seed (Rex, Luna, Thor) e seus dependentes
+    const allPets = await ctx.db.query("pets").collect();
+    for (const pet of allPets) {
+      if (!MOCK_PET_NAMES.has(pet.name)) continue;
 
-    // 4. Estoque Inicial (Ração Rex)
-    await ctx.db.insert("inventoryItems", {
-      petId: rexId,
-      name: "Ração Premier Formula Adulto Raças Grandes",
-      category: "racao",
-      unit: "g",
-      currentQuantity: 12000,
-      dailyConsumption: 400,
-      purchaseLeadTimeDays: 7,
-      referenceDate: new Date().toISOString(),
-      status: "OK",
-    });
+      const members = await ctx.db
+        .query("petMembers")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const m of members) await ctx.db.delete(m._id);
 
-    // 5. WhatsApp Session Denis
-    await ctx.db.insert("whatsappSessions", {
-      userId: denisId,
-      currentPetId: rexId,
-      state: "IDLE",
-    });
+      const invitations = await ctx.db
+        .query("petInvitations")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const inv of invitations) await ctx.db.delete(inv._id);
+
+      const meds = await ctx.db
+        .query("medications")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const med of meds) {
+        const schedules = await ctx.db
+          .query("medicationSchedules")
+          .withIndex("by_medication", (q) => q.eq("medicationId", med._id))
+          .collect();
+        for (const s of schedules) await ctx.db.delete(s._id);
+        await ctx.db.delete(med._id);
+      }
+
+      const adms = await ctx.db
+        .query("medicationAdministrations")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const a of adms) await ctx.db.delete(a._id);
+
+      const items = await ctx.db
+        .query("inventoryItems")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const item of items) {
+        const txs = await ctx.db
+          .query("inventoryTransactions")
+          .withIndex("by_item", (q) => q.eq("inventoryItemId", item._id))
+          .collect();
+        for (const t of txs) await ctx.db.delete(t._id);
+        await ctx.db.delete(item._id);
+      }
+
+      const purchases = await ctx.db
+        .query("purchases")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const p of purchases) {
+        const pItems = await ctx.db
+          .query("purchaseItems")
+          .withIndex("by_purchase", (q) => q.eq("purchaseId", p._id))
+          .collect();
+        for (const pi of pItems) await ctx.db.delete(pi._id);
+        await ctx.db.delete(p._id);
+      }
+
+      const shopping = await ctx.db
+        .query("shoppingListItems")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const s of shopping) await ctx.db.delete(s._id);
+
+      const weights = await ctx.db
+        .query("weightRecords")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const w of weights) await ctx.db.delete(w._id);
+
+      const vacs = await ctx.db
+        .query("vaccinations")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const v of vacs) await ctx.db.delete(v._id);
+
+      const apps = await ctx.db
+        .query("appointments")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const a of apps) await ctx.db.delete(a._id);
+
+      const healthEvents = await ctx.db
+        .query("healthEvents")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const he of healthEvents) await ctx.db.delete(he._id);
+
+      const notes = await ctx.db
+        .query("clinicalNotes")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const n of notes) await ctx.db.delete(n._id);
+
+      const logs = await ctx.db
+        .query("activityLogs")
+        .withIndex("by_pet", (q) => q.eq("petId", pet._id))
+        .collect();
+      for (const l of logs) await ctx.db.delete(l._id);
+
+      await ctx.db.delete(pet._id);
+      removedPetsCount++;
+    }
 
     return {
       success: true,
-      denisId,
-      rexId,
+      removedUsersCount,
+      removedMembersCount,
+      removedPetsCount,
+      preservedRealUser: realUser ? realUser.email : null,
     };
   },
 });

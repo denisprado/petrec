@@ -190,21 +190,6 @@ export async function processWhatsAppMessage(
     }
   }
 
-  // Fallback: se ainda não encontrou e há usuários na base, associar ao primeiro usuário ativo
-  if (!context?.user) {
-    const allUsers = await convex.query(api.users.list);
-    if (allUsers.length > 0) {
-      const defaultUser = allUsers[0];
-      await convex.mutation(api.whatsapp.directConnect, {
-        userId: defaultUser._id,
-        phone: cleanPhone,
-      });
-      context = await convex.query(api.whatsapp.getContextByPhone, {
-        phone: cleanPhone,
-      });
-    }
-  }
-
   if (!context?.user) {
     return {
       success: true,
@@ -213,7 +198,7 @@ export async function processWhatsAppMessage(
       replyText:
         "👋 Olá! Não identificamos seu número cadastrado no *PetRec*.\n\n" +
         "Para vincular sua conta:\n" +
-        "1. Acesse o PetRec Web\n" +
+        "1. Acesse o PetRec Web e crie ou acesse sua conta\n" +
         "2. Vá na aba *WhatsApp*\n" +
         "3. Insira seu número e clique em *'Conectar / Salvar Número'*!",
       currentState: "IDLE",
@@ -221,12 +206,7 @@ export async function processWhatsAppMessage(
   }
 
   const user = context.user;
-  let pets = context.pets || [];
-
-  if (pets.length === 0) {
-    const allPets = await convex.query(api.pets.listAll);
-    pets = allPets || [];
-  }
+  const pets = context.pets || [];
 
   const currentSession = context.session;
   const currentState = currentSession?.state || "IDLE";
