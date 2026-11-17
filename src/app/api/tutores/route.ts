@@ -20,19 +20,39 @@ function extractCleanError(error: unknown, fallback: string): string {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const petId = searchParams.get("petId");
+  const code = searchParams.get("code");
 
   try {
+    if (code) {
+      const lookup = await convex.query(api.users.getInviteOrPetByCode, {
+        code: String(code),
+      });
+      return NextResponse.json(lookup);
+    }
+
     const allUsers = await convex.query(api.users.list, {});
 
     if (!petId) {
-      return NextResponse.json({ members: [], invitations: [], allUsers });
+      return NextResponse.json({ members: [], invitations: [], allUsers, pet: null });
     }
 
     const pet = await convex.query(api.pets.getById, { petId: petId as any });
     const members = (pet as any)?.members || [];
     const invitations = (pet as any)?.invitations || [];
 
-    return NextResponse.json({ members, invitations, allUsers });
+    return NextResponse.json({
+      members,
+      invitations,
+      allUsers,
+      pet: pet
+        ? {
+            id: (pet as any)._id,
+            name: pet.name,
+            species: pet.species,
+            shareCode: (pet as any).shareCode,
+          }
+        : null,
+    });
   } catch (error: any) {
     console.error("GET /api/tutores error:", error);
     return NextResponse.json(
@@ -45,9 +65,33 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+
+    if (body?.action === "join_by_code") {
+      const { userId, code, preferredRole } = body;
+      if (!userId || !code || !String(code).trim()) {
+        return NextResponse.json(
+          { error: "Informe o usuário e o código ou ID do pet." },
+          { status: 400 }
+        );
+      }
+
+      const joined = await convex.mutation(api.users.joinPetByCode, {
+        userId: userId as any,
+        code: String(code).trim(),
+        preferredRole: preferredRole ? String(preferredRole) : undefined,
+      });
+
+      return NextResponse.json({
+        success: true,
+        ...joined,
+        message: `Vinculado ao pet ${joined.pet?.name || ""} com sucesso!`,
+      });
+    }
+
     const {
       petId,
       invitedEmail,
+      invitedPhone,
       invitedName,
       invitedById,
       role = "caregiver",
@@ -58,9 +102,9 @@ export async function POST(request: Request) {
       specialties,
     } = body;
 
-    if (!petId || !invitedEmail) {
+    if (!petId) {
       return NextResponse.json(
-        { error: "Dados incompletos para vincular tutor" },
+        { error: "Selecione um pet para gerar o convite." },
         { status: 400 }
       );
     }
@@ -72,7 +116,8 @@ export async function POST(request: Request) {
 
     const result = await convex.mutation(api.users.inviteOrAddMember, {
       petId: petId as any,
-      invitedEmail: String(invitedEmail),
+      invitedEmail: invitedEmail ? String(invitedEmail) : undefined,
+      invitedPhone: invitedPhone ? String(invitedPhone) : undefined,
       invitedName: invitedName ? String(invitedName) : undefined,
       invitedById: validInvitedById,
       role: String(role),
@@ -91,7 +136,9 @@ export async function POST(request: Request) {
       invitation: result.invitation,
       member: result.member,
       user: result.user,
-      message: `Tutor ${invitedEmail} vinculado com sucesso!`,
+      message: invitedEmail
+        ? `Tutor ${invitedEmail} vinculado com sucesso!`
+        : `Convite ${result.invitation?.token || ""} criado com sucesso!`,
     });
   } catch (error: any) {
     console.error("POST /api/tutores error:", error);

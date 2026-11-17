@@ -45,7 +45,9 @@ interface AppContextType {
   setShowLandingPage: (show: boolean | ((prev: boolean) => boolean)) => void;
   authModalOpen: boolean;
   authModalTab: AuthModalTab;
-  openAuthModal: (tab?: AuthModalTab) => void;
+  pendingInviteCode: string;
+  setPendingInviteCode: (code: string) => void;
+  openAuthModal: (tab?: AuthModalTab, inviteCode?: string) => void;
   closeAuthModal: () => void;
   syncUsers: (
     usersFromApi: any[],
@@ -93,11 +95,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [showLandingPage, setShowLandingPage] = useState<boolean>(false);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authModalTab, setAuthModalTab] = useState<AuthModalTab>("login");
+  const [pendingInviteCode, setPendingInviteCode] = useState<string>("");
   const isInitializedRef = useRef(false);
 
   const triggerRefresh = () => setRefreshTrigger((prev) => prev + 1);
 
-  const openAuthModal = (tab: AuthModalTab = "login") => {
+  const openAuthModal = (tab: AuthModalTab = "login", inviteCode?: string) => {
+    if (inviteCode !== undefined) {
+      setPendingInviteCode(inviteCode);
+    }
     setAuthModalTab(tab);
     setAuthModalOpen(true);
   };
@@ -177,8 +183,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         let initialPetId = "";
         let savedAuthUser: AppUser | null = null;
+        let urlInviteCode = "";
 
         if (typeof window !== "undefined") {
+          const searchParams = new URLSearchParams(window.location.search);
+          urlInviteCode =
+            (searchParams.get("convite") || searchParams.get("invite") || "").trim();
           initialPetId = localStorage.getItem("petrec_active_pet_id") || "";
           const rawAuth = localStorage.getItem("petrec_auth_user");
           if (rawAuth) {
@@ -198,6 +208,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setCurrentUserState(GUEST_USER);
           setPets([]);
           setActivePetIdState("");
+          if (urlInviteCode) {
+            setPendingInviteCode(urlInviteCode);
+            setAuthModalTab("register");
+            setAuthModalOpen(true);
+          }
           isInitializedRef.current = true;
           setIsAuthLoading(false);
           return;
@@ -415,6 +430,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setShowLandingPage,
         authModalOpen,
         authModalTab,
+        pendingInviteCode,
+        setPendingInviteCode,
         openAuthModal,
         closeAuthModal,
         syncUsers,

@@ -19,6 +19,10 @@ import {
   AlertCircle,
   Camera,
   Loader2,
+  KeyRound,
+  Copy,
+  MessageCircle,
+  Share2,
 } from "lucide-react";
 
 const AVATAR_PRESETS = [
@@ -36,7 +40,16 @@ interface AuthModalProps {
 }
 
 export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalProps) {
-  const { currentUser, isAuthenticated, syncUsers, logout, triggerRefresh } = useApp();
+  const {
+    currentUser,
+    isAuthenticated,
+    syncUsers,
+    logout,
+    triggerRefresh,
+    setActivePetId,
+    pendingInviteCode,
+    setPendingInviteCode,
+  } = useApp();
 
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<AuthModalTab>(initialTab);
@@ -55,6 +68,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
   const [regPhone, setRegPhone] = useState("");
   const [regRoleDesc, setRegRoleDesc] = useState("Tutor(a) Familiar");
   const [regAvatar, setRegAvatar] = useState(AVATAR_PRESETS[0]);
+  const [regInviteCode, setRegInviteCode] = useState("");
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   // Profile fields
@@ -84,9 +98,10 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
       setProfAvatar(currentUser?.avatar || AVATAR_PRESETS[0]);
       setProfRoleDesc(currentUser?.roleDescription || "Tutor(a) no PetRec");
       setProfNewPassword("");
+      setRegInviteCode(pendingInviteCode || "");
       setUploadingPhoto(false);
     }
-  }, [isOpen, initialTab, currentUser]);
+  }, [isOpen, initialTab, currentUser, pendingInviteCode]);
 
   if (!isOpen || !mounted) return null;
 
@@ -130,6 +145,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
           action: "login",
           email: loginEmail,
           password: loginPassword,
+          inviteCode: pendingInviteCode.trim() || regInviteCode.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -139,9 +155,17 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
         return;
       }
 
+      if (data.user?.linkedPet?.id) {
+        setActivePetId(data.user.linkedPet.id);
+      }
+      setPendingInviteCode("");
       syncUsers(data.users || [], data.user, true);
       triggerRefresh();
-      setSuccessMsg(`Bem-vindo(a), ${data.user.name}!`);
+      setSuccessMsg(
+        data.user?.linkedPet?.name
+          ? `Bem-vindo(a), ${data.user.name}! Você foi vinculado(a) a ${data.user.linkedPet.name}.`
+          : `Bem-vindo(a), ${data.user.name}!`
+      );
       setTimeout(() => {
         onClose();
       }, 600);
@@ -170,6 +194,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
           whatsappPhoneNumber: regPhone || undefined,
           avatar: regAvatar || undefined,
           roleDescription: regRoleDesc,
+          inviteCode: regInviteCode.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -179,10 +204,17 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
         return;
       }
 
+      if (data.user?.linkedPet?.id) {
+        setActivePetId(data.user.linkedPet.id);
+      }
+      setPendingInviteCode("");
+      setRegInviteCode("");
       syncUsers(data.users || [], data.user, true);
       triggerRefresh();
       setSuccessMsg(
-        data.user?.whatsappPhoneNumber
+        data.user?.linkedPet?.name
+          ? `Conta criada e vinculada a ${data.user.linkedPet.name}!`
+          : data.user?.whatsappPhoneNumber
           ? `Conta criada! Seu WhatsApp (${data.user.whatsappPhoneNumber}) já está ativo no PetRec.`
           : `Conta de ${data.user.name} criada e conectada!`
       );
@@ -342,6 +374,16 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
         <div className="p-5 max-h-[75vh] overflow-y-auto">
           {activeTab === "login" && (
             <form onSubmit={handleLogin} className="space-y-3.5">
+              {(pendingInviteCode || regInviteCode) && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 font-medium flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    Ao entrar, você será vinculado automaticamente usando o código{" "}
+                    <strong className="font-mono">{pendingInviteCode || regInviteCode}</strong>.
+                  </span>
+                </div>
+              )}
+
               <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-100 text-[11px] text-indigo-800 leading-relaxed">
                 <strong>Recebeu um convite para cuidar de um pet?</strong> Se você foi convidado(a)
                 por e-mail e ainda não definiu uma senha, informe o e-mail e a senha desejada
@@ -525,6 +567,25 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                 </div>
               </div>
 
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">
+                  Código de Convite ou ID do Pet (opcional)
+                </label>
+                <div className="relative">
+                  <KeyRound className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={regInviteCode}
+                    onChange={(e) => setRegInviteCode(e.target.value)}
+                    placeholder="Ex: CONV-XXXXXX, PET-XXXXXX ou ID do pet"
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Se alguém compartilhou um pet com você, cole o código ou ID aqui para já entrar conectado.
+                </p>
+              </div>
+
               <button
                 type="submit"
                 disabled={loading || uploadingPhoto}
@@ -667,6 +728,55 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                   placeholder="Deixe em branco para manter a senha atual"
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                 />
+              </div>
+
+              {/* Convidar Amigo para Criar Conta no PetRec */}
+              <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                  <Share2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Convidar Amigo para Criar Conta no PetRec</span>
+                </div>
+                <p className="text-[11px] text-emerald-800/80">
+                  Envie um link direto para familiares ou tutores criarem sua própria conta no PetRec.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const origin =
+                        typeof window !== "undefined" ? window.location.origin : "https://petrec.app";
+                      const link = `${origin}/convite/conta?de=${encodeURIComponent(
+                        currentUser?.name || "Tutor"
+                      )}`;
+                      navigator.clipboard.writeText(link);
+                      setSuccessMsg("Link de convite para cadastro copiado!");
+                    }}
+                    className="px-3 py-1.5 bg-white hover:bg-emerald-100/70 text-emerald-900 border border-emerald-300 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Copiar Link de Cadastro</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const origin =
+                        typeof window !== "undefined" ? window.location.origin : "https://petrec.app";
+                      const link = `${origin}/convite/conta?de=${encodeURIComponent(
+                        currentUser?.name || "Tutor"
+                      )}`;
+                      const msg = `Oi! Estou usando o PetRec para acompanhar a rotina, ração e remédios dos pets até pelo WhatsApp. Crie sua conta grátis por este link: ${link}`;
+                      window.open(
+                        `https://wa.me/?text=${encodeURIComponent(msg)}`,
+                        "_blank",
+                        "noopener,noreferrer"
+                      );
+                    }}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    <span>Enviar Convite no WhatsApp</span>
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 pt-2 border-t border-slate-100">

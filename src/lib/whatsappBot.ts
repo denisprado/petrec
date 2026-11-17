@@ -296,6 +296,62 @@ export async function processWhatsAppMessage(
   const currentSession = context.session;
   const currentState = currentSession?.state || "IDLE";
 
+  // Vínculo a um pet por código de convite (CONV-...), código do pet (PET-...) ou ID
+  if (!mediaType && text) {
+    const trimmedMsg = text.trim();
+    const explicitCodeMatch = trimmedMsg.match(
+      /^(?:vincular|entrar(?:\s+no\s+pet)?|codigo|c[oó]digo|convite)\s+([A-Za-z0-9_-]{4,40})$/i
+    );
+    const bareCodeMatch = trimmedMsg.match(
+      /^(PET-[A-Z0-9]{4,12}|CONV-[A-Z0-9]{4,12}|petrec_[a-z0-9_]+|(?=[a-z0-9]{20,40}$)(?=.*\d)(?=.*[a-z])[a-z0-9]+)$/i
+    );
+    const codeCandidate = explicitCodeMatch?.[1] || bareCodeMatch?.[1];
+
+    if (codeCandidate) {
+      try {
+        const joined = await convex.mutation(api.users.joinPetByCode, {
+          userId: user._id,
+          code: codeCandidate,
+        });
+
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId: user._id,
+          currentPetId: joined.pet.id as any,
+          state: "IDLE",
+        });
+
+        return {
+          success: true,
+          userFound: true,
+          senderPhone: cleanPhone,
+          userName: user.name,
+          replyText:
+            `🤝 *Vínculo Realizado com Sucesso!*\n\n` +
+            `🐾 Você agora faz parte da equipe de cuidados de *${joined.pet.name}* (${joined.pet.species})!\n` +
+            `• Código do pet: \`${joined.pet.shareCode}\`\n\n` +
+            `🤖 *Você já pode enviar mensagens por aqui:*\n` +
+            `• _"Comprei 15kg de ração"_\n` +
+            `• _"${joined.pet.name} deixou metade do pote"_\n` +
+            `• _"Não consegui dar o remédio das 8h"_\n` +
+            `• Ou envie *0* para abrir o menu completo!`,
+          actionTaken: "joined_pet_by_code",
+          currentState: "IDLE",
+        };
+      } catch {
+        return {
+          success: true,
+          userFound: true,
+          senderPhone: cleanPhone,
+          userName: user.name,
+          replyText:
+            `❌ Não encontrei nenhum pet ou convite ativo para o código *${codeCandidate}*.\n\n` +
+            `Verifique o código com quem compartilhou ou envie *"Nome, espécie, peso"* para cadastrar um novo pet.`,
+          currentState: pets.length === 0 ? "WAITING_FIRST_PET" : "IDLE",
+        };
+      }
+    }
+  }
+
   const previousPet =
     (currentSession?.currentPetId
       ? pets.find((p: any) => p._id === currentSession.currentPetId)
@@ -386,8 +442,9 @@ export async function processWhatsAppMessage(
       userName: user.name,
       replyText:
         `👋 Olá, *${firstName}*! Seu WhatsApp já está conectado ao *PetRec*!\n\n` +
-        `🐾 Notei que você ainda não cadastrou nenhum pet. Você pode cadastrar agora mesmo por aqui!\n\n` +
-        `👉 *Qual é o nome do seu pet?* (Ex.: envie *"Bidu, cão, 10kg"*, *"Gata Luna 4kg"* ou apenas o nome dele).`,
+        `🐾 Notei que você ainda não possui nenhum pet vinculado.\n` +
+        `• *Para cadastrar um novo pet*, envie o nome dele (ex.: *"Bidu, cão, 10kg"*).\n` +
+        `• *Se recebeu um código de outro tutor*, envie o código (ex.: *"PET-XXXXXX"* ou *"CONV-XXXXXX"*) para entrar no pet na hora!`,
       currentState: "WAITING_FIRST_PET",
     };
   }

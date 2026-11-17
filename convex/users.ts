@@ -1,5 +1,178 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
+import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+
+const SHARE_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateRandomCode(prefix: string): string {
+  let suffix = "";
+  for (let i = 0; i < 6; i++) {
+    suffix += SHARE_CODE_CHARS.charAt(
+      Math.floor(Math.random() * SHARE_CODE_CHARS.length)
+    );
+  }
+  return `${prefix}-${suffix}`;
+}
+
+function derivePetShareCode(pet: { _id: any; shareCode?: string }): string {
+  return pet.shareCode || `PET-${String(pet._id).slice(-6).toUpperCase()}`;
+}
+
+async function resolveInviteOrPetCode(
+  ctx: QueryCtx | MutationCtx,
+  rawCode: string
+) {
+  const trimmed = rawCode.trim();
+  if (!trimmed) return null;
+
+  const urlMatch = trimmed.match(/\/convite\/([^/?#\s]+)/i);
+  const cleanCode = decodeURIComponent(urlMatch ? urlMatch[1] : trimmed).trim();
+  if (!cleanCode) return null;
+
+  const candidates = Array.from(
+    new Set([cleanCode, cleanCode.toUpperCase(), cleanCode.toLowerCase()])
+  );
+
+  for (const candidate of candidates) {
+    const inv = await ctx.db
+      .query("petInvitations")
+      .withIndex("by_token", (q) => q.eq("token", candidate))
+      .first();
+    if (inv) {
+      const pet = await ctx.db.get(inv.petId);
+      if (!pet) return null;
+      const inviter = inv.invitedById ? await ctx.db.get(inv.invitedById) : null;
+      return {
+        kind: "invitation" as const,
+        invitation: inv,
+        pet,
+        inviter,
+      };
+    }
+  }
+
+  const upperCode = cleanCode.toUpperCase();
+  const petByShareCode = await ctx.db
+    .query("pets")
+    .withIndex("by_share_code", (q) => q.eq("shareCode", upperCode))
+    .first();
+
+  if (petByShareCode) {
+    return {
+      kind: "pet" as const,
+      pet: petByShareCode,
+    };
+  }
+
+  const allPets = await ctx.db.query("pets").collect();
+  const matchedPet = allPets.find(
+    (p) =>
+      derivePetShareCode(p).toUpperCase() === upperCode ||
+      String(p._id) === cleanCode
+  );
+
+  if (matchedPet) {
+    return {
+      kind: "pet" as const,
+      pet: matchedPet,
+    };
+  }
+
+  return null;
+}
+
+async function applyCodeLinkForUser(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  rawCode: string,
+  preferredRole?: string
+) {
+  const resolved = await resolveInviteOrPetCode(ctx, rawCode);
+  if (!resolved) {
+    throw new Error("Código de convite ou ID do pet inválido ou não encontrado.");
+  }
+
+  const nowIso = new Date().toISOString();
+  const pet = resolved.pet;
+  let role = preferredRole && preferredRole !== "owner" ? preferredRole : "caregiver";
+  let accessDays: number | undefined;
+  let canPrescribe: boolean | undefined;
+
+  if (resolved.kind === "invitation") {
+    const inv = resolved.invitation;
+    role = inv.role || "caregiver";
+    accessDays = inv.accessDays;
+    canPrescribe = inv.canPrescribe;
+
+    await ctx.db.patch(inv._id, {
+      acceptedAt: nowIso,
+      acceptedByUserId: userId,
+    });
+  }
+
+  const accessExpiresAt =
+    accessDays && accessDays > 0
+      ? new Date(Date.now() + accessDays * 86400000).toISOString()
+      : undefined;
+
+  const existingMember = await ctx.db
+    .query("petMembers")
+    .withIndex("by_pet_and_user", (q) =>
+      q.eq("petId", pet._id).eq("userId", userId)
+    )
+    .first();
+
+  let memberId;
+  if (existingMember) {
+    memberId = existingMember._id;
+    if (!existingMember.isPrimary && existingMember.role === "viewer" && role !== "viewer") {
+      await ctx.db.patch(existingMember._id, {
+        role,
+        ...(accessExpiresAt ? { accessExpiresAt } : {}),
+        ...(canPrescribe !== undefined ? { canPrescribe } : {}),
+      });
+    }
+  } else {
+    memberId = await ctx.db.insert("petMembers", {
+      petId: pet._id,
+      userId,
+      role,
+      isPrimary: false,
+      canPrescribe,
+      accessExpiresAt,
+    });
+  }
+
+  const session = await ctx.db
+    .query("whatsappSessions")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+
+  if (session && !session.currentPetId) {
+    await ctx.db.patch(session._id, {
+      currentPetId: pet._id,
+      state: "IDLE",
+    });
+  }
+
+  await ctx.db.insert("activityLogs", {
+    petId: pet._id,
+    userId,
+    action: `vinculou-se ao pet ${pet.name} usando código (${rawCode.trim()})`,
+    entityType: "petMember",
+    entityId: memberId,
+  });
+
+  return {
+    pet: {
+      ...pet,
+      id: pet._id,
+      shareCode: derivePetShareCode(pet),
+    },
+    role,
+    memberId,
+  };
+}
 
 const DEFAULT_AVATARS = [
   "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
@@ -67,6 +240,68 @@ export const getById = query({
   },
 });
 
+export const getInviteOrPetByCode = query({
+  args: { code: v.string() },
+  handler: async (ctx, args) => {
+    const resolved = await resolveInviteOrPetCode(ctx, args.code);
+    if (!resolved) {
+      return { found: false };
+    }
+
+    const petSummary = {
+      id: resolved.pet._id,
+      name: resolved.pet.name,
+      species: resolved.pet.species,
+      breed: resolved.pet.breed,
+      photo: resolved.pet.photo,
+      shareCode: derivePetShareCode(resolved.pet),
+    };
+
+    if (resolved.kind === "invitation") {
+      const inv = resolved.invitation;
+      return {
+        found: true,
+        kind: "invitation",
+        code: inv.token,
+        role: inv.role,
+        accessDays: inv.accessDays,
+        canPrescribe: inv.canPrescribe,
+        invitedEmail: inv.invitedEmail,
+        invitedName: inv.invitedName,
+        acceptedAt: inv.acceptedAt,
+        inviterName: resolved.inviter?.name || "Um tutor no PetRec",
+        pet: petSummary,
+      };
+    }
+
+    return {
+      found: true,
+      kind: "pet",
+      code: petSummary.shareCode,
+      role: "caregiver",
+      pet: petSummary,
+    };
+  },
+});
+
+export const joinPetByCode = mutation({
+  args: {
+    userId: v.id("users"),
+    code: v.string(),
+    preferredRole: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) throw new Error("Usuário não encontrado.");
+    return await applyCodeLinkForUser(
+      ctx,
+      args.userId,
+      args.code,
+      args.preferredRole
+    );
+  },
+});
+
 export const register = mutation({
   args: {
     name: v.string(),
@@ -76,6 +311,7 @@ export const register = mutation({
     avatar: v.optional(v.string()),
     roleDescription: v.optional(v.string()),
     linkToExistingPetsRole: v.optional(v.string()),
+    inviteCode: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const email = args.email.toLowerCase().trim();
@@ -183,6 +419,12 @@ export const register = mutation({
       }
     }
 
+    let linkedPet: any = null;
+    if (args.inviteCode && args.inviteCode.trim().length > 0) {
+      const linked = await applyCodeLinkForUser(ctx, userId, args.inviteCode.trim());
+      linkedPet = linked.pet;
+    }
+
     if (normalizedPhone) {
       const existingSession = await ctx.db
         .query("whatsappSessions")
@@ -202,7 +444,8 @@ export const register = mutation({
     }
 
     const createdUser = await ctx.db.get(userId);
-    return sanitizeUser(createdUser);
+    const sanitized = sanitizeUser(createdUser);
+    return linkedPet ? { ...sanitized, linkedPet } : sanitized;
   },
 });
 
@@ -210,6 +453,7 @@ export const login = mutation({
   args: {
     email: v.string(),
     password: v.string(),
+    inviteCode: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const email = args.email.toLowerCase().trim();
@@ -247,12 +491,22 @@ export const login = mutation({
     const nowIso = new Date().toISOString();
     for (const inv of pendingInvites) {
       if (!inv.acceptedAt) {
-        await ctx.db.patch(inv._id, { acceptedAt: nowIso });
+        await ctx.db.patch(inv._id, {
+          acceptedAt: nowIso,
+          acceptedByUserId: user._id,
+        });
       }
     }
 
+    let linkedPet: any = null;
+    if (args.inviteCode && args.inviteCode.trim().length > 0) {
+      const linked = await applyCodeLinkForUser(ctx, user._id, args.inviteCode.trim());
+      linkedPet = linked.pet;
+    }
+
     const refreshed = await ctx.db.get(user._id);
-    return sanitizeUser(refreshed);
+    const sanitized = sanitizeUser(refreshed);
+    return linkedPet ? { ...sanitized, linkedPet } : sanitized;
   },
 });
 
@@ -340,7 +594,8 @@ export const updateProfile = mutation({
 export const inviteOrAddMember = mutation({
   args: {
     petId: v.id("pets"),
-    invitedEmail: v.string(),
+    invitedEmail: v.optional(v.string()),
+    invitedPhone: v.optional(v.string()),
     invitedName: v.optional(v.string()),
     invitedById: v.optional(v.id("users")),
     role: v.string(),
@@ -351,28 +606,38 @@ export const inviteOrAddMember = mutation({
     specialties: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const email = args.invitedEmail.toLowerCase().trim();
-    if (!email || !email.includes("@")) {
+    const email = args.invitedEmail ? args.invitedEmail.toLowerCase().trim() : "";
+    if (email && !email.includes("@")) {
       throw new Error("E-mail do convidado inválido.");
     }
+    const normalizedPhone = normalizeWhatsappPhone(args.invitedPhone);
 
     const pet = await ctx.db.get(args.petId);
     if (!pet) throw new Error("Pet não encontrado.");
 
-    // 1. Buscar ou criar o usuário pelo e-mail
-    let user = await ctx.db
-      .query("users")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .first();
+    // 1. Buscar usuário existente pelo e-mail ou telefone (e pré-criar apenas se e-mail informado)
+    let user = email
+      ? await ctx.db
+          .query("users")
+          .withIndex("by_email", (q) => q.eq("email", email))
+          .first()
+      : null;
 
-    const defaultName =
-      args.invitedName?.trim() ||
-      email
-        .split("@")[0]
-        .replace(/[._-]+/g, " ")
-        .replace(/\b\w/g, (l) => l.toUpperCase());
+    if (!user && normalizedPhone) {
+      user = await ctx.db
+        .query("users")
+        .withIndex("by_whatsapp", (q) => q.eq("whatsappPhoneNumber", normalizedPhone))
+        .first();
+    }
 
-    if (!user) {
+    if (!user && email) {
+      const defaultName =
+        args.invitedName?.trim() ||
+        email
+          .split("@")[0]
+          .replace(/[._-]+/g, " ")
+          .replace(/\b\w/g, (l) => l.toUpperCase());
+
       const userId = await ctx.db.insert("users", {
         name: defaultName,
         email,
@@ -386,85 +651,103 @@ export const inviteOrAddMember = mutation({
             ? "Clínica / Recepção"
             : "Tutor(a) convidado(a)",
         timezone: "America/Sao_Paulo",
+        ...(normalizedPhone
+          ? { whatsappPhoneNumber: normalizedPhone, whatsappVerifiedAt: Date.now() }
+          : {}),
         createdAt: Date.now(),
       });
       user = await ctx.db.get(userId);
+      if (!user) throw new Error("Falha ao criar usuário convidado.");
     }
 
-    if (!user) throw new Error("Falha ao criar usuário convidado.");
-
-    // 2. Criar ou atualizar vínculo em petMembers
+    // 2. Criar ou atualizar vínculo em petMembers quando houver usuário identificado
     const accessExpiresAt =
       args.accessDays && args.accessDays > 0
         ? new Date(Date.now() + args.accessDays * 86400000).toISOString()
         : undefined;
 
-    const existingMember = await ctx.db
-      .query("petMembers")
-      .withIndex("by_pet_and_user", (q) =>
-        q.eq("petId", args.petId).eq("userId", user!._id)
-      )
-      .first();
+    let memberId = null;
+    if (user) {
+      const existingMember = await ctx.db
+        .query("petMembers")
+        .withIndex("by_pet_and_user", (q) =>
+          q.eq("petId", args.petId).eq("userId", user!._id)
+        )
+        .first();
 
-    let memberId;
-    if (existingMember) {
-      await ctx.db.patch(existingMember._id, {
-        role: args.role,
-        accessExpiresAt,
-        canPrescribe: args.canPrescribe,
-        crmv: args.crmv,
-        clinicName: args.clinicName,
-        specialties: args.specialties,
-      });
-      memberId = existingMember._id;
-    } else {
-      memberId = await ctx.db.insert("petMembers", {
-        petId: args.petId,
-        userId: user._id,
-        role: args.role,
-        isPrimary: args.role === "owner",
-        accessExpiresAt,
-        canPrescribe: args.canPrescribe,
-        crmv: args.crmv,
-        clinicName: args.clinicName,
-        specialties: args.specialties,
-      });
+      if (existingMember) {
+        await ctx.db.patch(existingMember._id, {
+          role: args.role,
+          accessExpiresAt,
+          canPrescribe: args.canPrescribe,
+          crmv: args.crmv,
+          clinicName: args.clinicName,
+          specialties: args.specialties,
+        });
+        memberId = existingMember._id;
+      } else {
+        memberId = await ctx.db.insert("petMembers", {
+          petId: args.petId,
+          userId: user._id,
+          role: args.role,
+          isPrimary: args.role === "owner",
+          accessExpiresAt,
+          canPrescribe: args.canPrescribe,
+          crmv: args.crmv,
+          clinicName: args.clinicName,
+          specialties: args.specialties,
+        });
+      }
     }
 
-    // 3. Registrar convite em petInvitations
-    const token = `petrec_${Date.now().toString(36)}_${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
+    // 3. Gerar token curto amigável (CONV-XXXXXX) e registrar convite em petInvitations
+    let token = generateRandomCode("CONV");
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const collision = await ctx.db
+        .query("petInvitations")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .first();
+      if (!collision) break;
+      token = generateRandomCode("CONV");
+    }
+
     const nowIso = new Date().toISOString();
     const invitationId = await ctx.db.insert("petInvitations", {
       petId: args.petId,
-      invitedEmail: email,
-      invitedName: args.invitedName?.trim() || user.name,
+      invitedEmail: email || "",
+      invitedPhone: normalizedPhone,
+      invitedName: args.invitedName?.trim() || user?.name,
       invitedById: args.invitedById,
       role: args.role,
       token,
       accessDays: args.accessDays,
       canPrescribe: args.canPrescribe,
       createdAt: nowIso,
-      acceptedAt: user.passwordHash ? nowIso : undefined,
+      acceptedAt: user?.passwordHash ? nowIso : undefined,
+      acceptedByUserId: user?.passwordHash ? user._id : undefined,
     });
 
     // 4. Auditoria
     await ctx.db.insert("activityLogs", {
       petId: args.petId,
       userId: args.invitedById,
-      action: `convidou/vinculou ${user.name} (${email}) como ${args.role}`,
-      entityType: "petMember",
-      entityId: memberId,
+      action: user
+        ? `convidou/vinculou ${user.name} (${email || normalizedPhone || token}) como ${args.role}`
+        : `gerou código de convite ${token}${args.invitedName ? ` para ${args.invitedName.trim()}` : ""} (${args.role})`,
+      entityType: memberId ? "petMember" : "petInvitation",
+      entityId: memberId || invitationId,
     });
 
     const invitation = await ctx.db.get(invitationId);
-    const member = await ctx.db.get(memberId);
+    const member = memberId ? await ctx.db.get(memberId) : null;
 
     return {
       invitation: invitation ? { ...invitation, id: invitation._id } : null,
-      member: member ? { ...member, id: member._id, user: sanitizeUser(user) } : null,
-      user: sanitizeUser(user),
+      member:
+        member && user
+          ? { ...member, id: member._id, user: sanitizeUser(user) }
+          : null,
+      user: user ? sanitizeUser(user) : null,
     };
   },
 });

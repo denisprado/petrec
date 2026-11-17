@@ -21,6 +21,9 @@ import {
   AlertCircle,
   Copy,
   ExternalLink,
+  KeyRound,
+  MessageCircle,
+  Share2,
 } from "lucide-react";
 import { format, differenceInCalendarDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -29,6 +32,12 @@ export default function TutoresPage() {
   const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [members, setMembers] = useState<any[]>([]);
   const [invitations, setInvitations] = useState<any[]>([]);
+  const [petInfo, setPetInfo] = useState<{
+    id: string;
+    name: string;
+    species: string;
+    shareCode?: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Modal Convite
@@ -36,11 +45,22 @@ export default function TutoresPage() {
   const [inviteType, setInviteType] = useState<"family" | "professional">("family");
   const [inviteName, setInviteName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [invitePhone, setInvitePhone] = useState("");
   const [inviteRole, setInviteRole] = useState("caregiver");
   const [inviteAccessDays, setInviteAccessDays] = useState<string>("30");
   const [createdInvite, setCreatedInvite] = useState<any | null>(null);
+  const [lastInvitePhone, setLastInvitePhone] = useState("");
+
+  // Vincular a outro pet por código/ID e convite geral de conta
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const [joiningByCode, setJoiningByCode] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [accountInvitePhone, setAccountInvitePhone] = useState("");
 
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  const getAppOrigin = () =>
+    typeof window !== "undefined" ? window.location.origin : "https://petrec.app";
 
   useEffect(() => {
     let isCancelled = false;
@@ -60,6 +80,7 @@ export default function TutoresPage() {
           if (!isCancelled) {
             setMembers(data.members || []);
             setInvitations(data.invitations || []);
+            setPetInfo(data.pet || null);
             if (!activePetId && petIdToFetch) {
               setActivePetId(petIdToFetch);
             }
@@ -81,9 +102,47 @@ export default function TutoresPage() {
     };
   }, [activePetId, pets, refreshTrigger]);
 
+  const handleJoinByCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinCodeInput.trim() || !currentUser?.id) return;
+    setJoiningByCode(true);
+    setJoinError(null);
+    try {
+      const res = await fetch("/api/tutores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "join_by_code",
+          userId: currentUser.id,
+          code: joinCodeInput.trim(),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setJoinError(json.error || "Código ou ID do pet não encontrado.");
+        return;
+      }
+      if (json.pet?.id) {
+        setActivePetId(json.pet.id);
+      }
+      setFeedback(`✓ Você foi vinculado(a) ao pet ${json.pet?.name || ""}!`);
+      setTimeout(() => setFeedback(null), 4000);
+      setJoinCodeInput("");
+      triggerRefresh();
+    } catch {
+      setJoinError("Falha de conexão ao vincular ao pet.");
+    } finally {
+      setJoiningByCode(false);
+    }
+  };
+
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmail) return;
+    const targetPetId = activePetId || pets[0]?.id;
+    if (!targetPetId) {
+      alert("Selecione ou cadastre um pet primeiro.");
+      return;
+    }
 
     const finalRole =
       inviteType === "family"
@@ -104,8 +163,9 @@ export default function TutoresPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          petId: activePetId,
-          invitedEmail: inviteEmail,
+          petId: targetPetId,
+          invitedEmail: inviteEmail.trim() || undefined,
+          invitedPhone: invitePhone.trim() || undefined,
           invitedName: inviteName.trim() || undefined,
           invitedById: currentUser.id,
           role: finalRole,
@@ -116,11 +176,18 @@ export default function TutoresPage() {
 
       const json = await res.json();
       if (res.ok) {
-        setFeedback(`✓ Convite gerado e vínculo criado para ${inviteName.trim() || inviteEmail}!`);
+        const targetLabel =
+          inviteName.trim() ||
+          inviteEmail.trim() ||
+          invitePhone.trim() ||
+          json.invitation?.token;
+        setFeedback(`✓ Convite criado (${targetLabel})!`);
         setTimeout(() => setFeedback(null), 4000);
+        setLastInvitePhone(invitePhone.trim());
         setCreatedInvite(json.invitation);
         setInviteName("");
         setInviteEmail("");
+        setInvitePhone("");
         triggerRefresh();
       } else {
         alert(json.error || "Erro ao convidar tutor ou profissional");
@@ -240,19 +307,235 @@ export default function TutoresPage() {
           </p>
         </div>
 
-        {permissions.canManageMembers && (
+        {permissions.canManageMembers && (activePetId || pets[0]?.id) && (
           <button
             onClick={() => {
               setCreatedInvite(null);
+              setLastInvitePhone("");
               setShowInviteModal(true);
             }}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5"
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
           >
             <UserPlus className="w-4 h-4" />
-            <span>Convidar Tutor ou Profissional</span>
+            <span>Convidar para Este Pet</span>
           </button>
         )}
       </div>
+
+      {/* Três Fluxos Rápidos: Código do Pet, Vincular-se por Código/ID e Convidar para Criar Conta */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* 1. Código e ID do Pet Atual */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3 flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <QrCode className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-black text-slate-900">
+                  Código & ID deste Pet
+                </h2>
+                <p className="text-[11px] text-slate-500">
+                  Quem já tem conta pode entrar usando o código ou ID de{" "}
+                  <strong>{petInfo?.name || "seu pet"}</strong>.
+                </p>
+              </div>
+            </div>
+
+            {activePetId ? (
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase text-slate-400">
+                      Código Curto do Pet
+                    </div>
+                    <div className="text-sm font-black font-mono text-emerald-700">
+                      {petInfo?.shareCode || `PET-${activePetId.slice(-6).toUpperCase()}`}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const code =
+                        petInfo?.shareCode || `PET-${activePetId.slice(-6).toUpperCase()}`;
+                      navigator.clipboard.writeText(code);
+                      setFeedback(`Código ${code} copiado!`);
+                      setTimeout(() => setFeedback(null), 3000);
+                    }}
+                    className="px-2.5 py-1 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg text-[11px] font-bold text-slate-700 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copiar</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] font-bold uppercase text-slate-400">
+                      ID Completo do Pet
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-600 truncate">
+                      {activePetId}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(activePetId);
+                      setFeedback("ID do pet copiado!");
+                      setTimeout(() => setFeedback(null), 3000);
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg text-[11px] font-bold text-slate-700 flex items-center gap-1 shrink-0 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>ID</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500 pt-1">
+                Cadastre ou vincule um pet para gerar o código compartilhável.
+              </p>
+            )}
+          </div>
+
+          {activePetId && (
+            <button
+              type="button"
+              onClick={() => {
+                const code =
+                  petInfo?.shareCode || `PET-${activePetId.slice(-6).toUpperCase()}`;
+                const link = `${getAppOrigin()}/convite/${encodeURIComponent(code)}`;
+                const msg = `Oi! Você pode acompanhar ${
+                  petInfo?.name || "meu pet"
+                } comigo no PetRec! Acesse ${link} ou use o código *${code}* (ID: ${activePetId}).`;
+                window.open(
+                  `https://wa.me/?text=${encodeURIComponent(msg)}`,
+                  "_blank",
+                  "noopener,noreferrer"
+                );
+              }}
+              className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>Enviar Código pelo WhatsApp</span>
+            </button>
+          )}
+        </div>
+
+        {/* 2. Vincular-se a outro Pet por Código ou ID */}
+        <div className="bg-white rounded-2xl border border-indigo-200 p-4 shadow-2xs space-y-3 flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
+                <KeyRound className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-black text-slate-900">
+                  Vincular-me a Outro Pet
+                </h2>
+                <p className="text-[11px] text-slate-500">
+                  Cole um código de convite (<strong>CONV-...</strong>), código do pet (<strong>PET-...</strong>) ou ID.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleJoinByCode} className="space-y-2.5 pt-1">
+              <input
+                type="text"
+                required
+                value={joinCodeInput}
+                onChange={(e) => setJoinCodeInput(e.target.value)}
+                placeholder="Ex: CONV-7K9M2P, PET-8A2C4F ou ID"
+                className="w-full px-3 py-2 text-xs sm:text-sm font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+              />
+              {joinError && (
+                <p className="text-[11px] font-semibold text-rose-600">{joinError}</p>
+              )}
+              <button
+                type="submit"
+                disabled={joiningByCode}
+                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {joiningByCode ? "Vinculando..." : "Vincular ao Pet Agora"}
+              </button>
+            </form>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            Você também pode enviar o código direto no WhatsApp do PetRec!
+          </p>
+        </div>
+
+        {/* 3. Convidar Alguém para Criar Conta no PetRec */}
+        <div className="bg-gradient-to-br from-emerald-50 to-teal-50/70 rounded-2xl border border-emerald-200 p-4 shadow-2xs space-y-3 flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <Share2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-black text-slate-900">
+                  Convidar para Criar Conta
+                </h2>
+                <p className="text-[11px] text-emerald-900/80">
+                  Indique o PetRec para outro tutor criar uma conta gratuita.
+                </p>
+              </div>
+            </div>
+
+            <input
+              type="tel"
+              value={accountInvitePhone}
+              onChange={(e) => setAccountInvitePhone(e.target.value)}
+              placeholder="WhatsApp do amigo com DDD (opcional)"
+              className="w-full px-3 py-2 text-xs bg-white border border-emerald-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const link = `${getAppOrigin()}/convite/conta?de=${encodeURIComponent(
+                  currentUser?.name || "Tutor"
+                )}`;
+                navigator.clipboard.writeText(link);
+                setFeedback("Link de convite para cadastro copiado!");
+                setTimeout(() => setFeedback(null), 3000);
+              }}
+              className="flex-1 py-2 px-3 bg-white hover:bg-emerald-100/60 text-emerald-900 border border-emerald-300 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Copiar Link</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const link = `${getAppOrigin()}/convite/conta?de=${encodeURIComponent(
+                  currentUser?.name || "Tutor"
+                )}`;
+                const digits = accountInvitePhone.replace(/\D/g, "");
+                const target =
+                  digits.length >= 10
+                    ? digits.startsWith("55")
+                      ? digits
+                      : `55${digits}`
+                    : "";
+                const msg = `Oi! Estou usando o PetRec para controlar a ração, remédios e saúde dos pets até pelo WhatsApp. Crie sua conta grátis aqui: ${link}`;
+                window.open(
+                  `https://wa.me/${target}?text=${encodeURIComponent(msg)}`,
+                  "_blank",
+                  "noopener,noreferrer"
+                );
+              }}
+              className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>WhatsApp</span>
+            </button>
+          </div>
+        </div>
+      </section>
 
       {/* Seção 1: Equipe Médica & Profissionais Credenciados */}
       <section className="bg-white rounded-2xl border border-indigo-100 p-4 sm:p-5 shadow-2xs space-y-4">
@@ -486,9 +769,19 @@ export default function TutoresPage() {
           </h2>
           <div className="divide-y divide-slate-100">
             {invitations.map((inv) => (
-              <div key={inv.id} className="py-2.5 flex items-center justify-between text-xs">
+              <div key={inv.id} className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                 <div>
-                  <div className="font-bold text-slate-800">{inv.invitedEmail}</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-slate-800">
+                      {inv.invitedEmail ||
+                        inv.invitedPhone ||
+                        inv.invitedName ||
+                        "Convite por Link / Código"}
+                    </span>
+                    <span className="font-mono text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-md">
+                      {inv.token}
+                    </span>
+                  </div>
                   <div className="text-slate-500 text-[11px]">
                     Papel proposto: <strong>{roleBadge[inv.role]?.label || inv.role}</strong>
                     {inv.accessDays && <span> • Validade de {inv.accessDays} dias</span>} • Enviado em{" "}
@@ -496,6 +789,24 @@ export default function TutoresPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {!inv.acceptedAt && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const link = `${getAppOrigin()}/convite/${encodeURIComponent(
+                          inv.token
+                        )}`;
+                        navigator.clipboard.writeText(link);
+                        setFeedback(`Link do convite ${inv.token} copiado!`);
+                        setTimeout(() => setFeedback(null), 3000);
+                      }}
+                      className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                      title="Copiar link do convite"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Link</span>
+                    </button>
+                  )}
                   <span
                     className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
                       inv.acceptedAt
@@ -637,25 +948,41 @@ export default function TutoresPage() {
                   />
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-slate-700 block mb-1">
-                    {inviteType === "professional"
-                      ? "E-mail do Médico Veterinário / Clínica / Sitter *"
-                      : "E-mail do Convidado *"}
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    placeholder={
-                      inviteType === "professional"
-                        ? "ex: dra.camila@veterinaria.com"
-                        : "ex: ana@exemplo.com"
-                    }
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      {inviteType === "professional"
+                        ? "E-mail do Profissional (opcional)"
+                        : "E-mail do Convidado (opcional)"}
+                    </label>
+                    <input
+                      type="email"
+                      placeholder={
+                        inviteType === "professional"
+                          ? "ex: dra.camila@vet.com"
+                          : "ex: ana@exemplo.com"
+                      }
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                      WhatsApp com DDD (opcional)
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="19999999999"
+                      value={invitePhone}
+                      onChange={(e) => setInvitePhone(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
                 </div>
+                <p className="text-[11px] text-slate-500 -mt-2">
+                  Você pode deixar e-mail e WhatsApp em branco se quiser apenas gerar o código e link do convite para enviar por onde preferir.
+                </p>
 
                 <div>
                   <label className="text-xs font-bold text-slate-700 block mb-1">
@@ -753,32 +1080,82 @@ export default function TutoresPage() {
                   </div>
                 </div>
 
+                {/* Código de Convite Curto */}
+                <div className="bg-indigo-50 p-3 rounded-xl border border-indigo-200 flex items-center justify-between gap-2 text-left">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase text-indigo-500">
+                      Código do Convite
+                    </div>
+                    <div className="text-base font-black font-mono text-indigo-900">
+                      {createdInvite.token}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(createdInvite.token);
+                      setFeedback(`Código ${createdInvite.token} copiado!`);
+                      setTimeout(() => setFeedback(null), 3000);
+                    }}
+                    className="px-3 py-1.5 bg-white hover:bg-indigo-100 border border-indigo-300 rounded-lg text-xs font-bold text-indigo-800 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copiar Código</span>
+                  </button>
+                </div>
+
+                {/* Link Real de Convite */}
                 <div className="bg-slate-100 p-2.5 rounded-xl text-xs font-mono text-slate-700 break-all select-all flex items-center justify-between gap-2">
-                  <span>https://petrec.app/convite/{createdInvite.token}</span>
+                  <span>{`${getAppOrigin()}/convite/${createdInvite.token}`}</span>
                   <button
                     type="button"
                     onClick={() => {
                       navigator.clipboard.writeText(
-                        `https://petrec.app/convite/${createdInvite.token}`
+                        `${getAppOrigin()}/convite/${createdInvite.token}`
                       );
                       setFeedback("Link copiado para a área de transferência!");
                       setTimeout(() => setFeedback(null), 3000);
                     }}
-                    className="p-1 hover:bg-slate-200 rounded text-slate-600"
+                    className="p-1 hover:bg-slate-200 rounded text-slate-600 shrink-0 cursor-pointer"
                     title="Copiar Link"
                   >
                     <Copy className="w-4 h-4" />
                   </button>
                 </div>
 
-                <div className="pt-2">
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const inviteUrl = `${getAppOrigin()}/convite/${createdInvite.token}`;
+                      const petLabel = petInfo?.name || "meu pet";
+                      const digits = lastInvitePhone.replace(/\D/g, "");
+                      const target =
+                        digits.length >= 10
+                          ? digits.startsWith("55")
+                            ? digits
+                            : `55${digits}`
+                          : "";
+                      const msg = `Oi! Convidei você para cuidar de *${petLabel}* comigo no PetRec! Aceite pelo link ${inviteUrl} ou use o código *${createdInvite.token}*.`;
+                      window.open(
+                        `https://wa.me/${target}?text=${encodeURIComponent(msg)}`,
+                        "_blank",
+                        "noopener,noreferrer"
+                      );
+                    }}
+                    className="px-5 py-2.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>Enviar Convite pelo WhatsApp</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
                       setShowInviteModal(false);
                       setCreatedInvite(null);
+                      setLastInvitePhone("");
                     }}
-                    className="px-6 py-2 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-xl"
+                    className="px-6 py-2.5 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-xl cursor-pointer"
                   >
                     Concluir
                   </button>

@@ -46,7 +46,7 @@ export async function POST(request: Request) {
     const { action } = body || {};
 
     if (action === "login") {
-      const { email, password } = body;
+      const { email, password, inviteCode } = body;
       if (!email || !password) {
         return NextResponse.json(
           { error: "Informe e-mail e senha para entrar." },
@@ -57,6 +57,7 @@ export async function POST(request: Request) {
       const user = await convex.mutation(api.users.login, {
         email: String(email),
         password: String(password),
+        inviteCode: inviteCode ? String(inviteCode) : undefined,
       });
 
       const users = await convex.query(api.users.list, {});
@@ -76,6 +77,7 @@ export async function POST(request: Request) {
         avatar,
         roleDescription,
         linkToExistingPetsRole,
+        inviteCode,
       } = body;
 
       if (!name || !email || !password) {
@@ -95,6 +97,7 @@ export async function POST(request: Request) {
         linkToExistingPetsRole: linkToExistingPetsRole
           ? String(linkToExistingPetsRole)
           : undefined,
+        inviteCode: inviteCode ? String(inviteCode) : undefined,
       });
 
       const users = await convex.query(api.users.list, {});

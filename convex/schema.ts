@@ -28,7 +28,8 @@ export default defineSchema({
     microchip: v.optional(v.string()),
     notes: v.optional(v.string()),
     routineMode: v.optional(v.string()), // "manual" | "automatic_by_exception"
-  }),
+    shareCode: v.optional(v.string()),
+  }).index("by_share_code", ["shareCode"]),
 
   petMembers: defineTable({
     petId: v.id("pets"),
@@ -50,6 +51,7 @@ export default defineSchema({
     petId: v.id("pets"),
     invitedEmail: v.string(),
     invitedName: v.optional(v.string()),
+    invitedPhone: v.optional(v.string()),
     invitedById: v.optional(v.id("users")),
     role: v.string(),
     token: v.string(),
@@ -57,6 +59,7 @@ export default defineSchema({
     canPrescribe: v.optional(v.boolean()),
     createdAt: v.string(),
     acceptedAt: v.optional(v.string()),
+    acceptedByUserId: v.optional(v.id("users")),
   })
     .index("by_pet", ["petId"])
     .index("by_email", ["invitedEmail"])

@@ -11,14 +11,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { isAuthenticated, isAuthLoading, showLandingPage } = useApp();
 
+  const isInviteRoute = Boolean(pathname?.startsWith("/convite"));
   const showingPublicLanding =
-    !isAuthLoading && (!isAuthenticated || (pathname === "/" && showLandingPage));
+    !isAuthLoading &&
+    !isInviteRoute &&
+    (!isAuthenticated || (pathname === "/" && showLandingPage));
 
   return (
     <>
       <Header />
       <BottomNav />
-      <main className={showingPublicLanding ? "flex-1" : "flex-1 pb-20 md:pb-12"}>
+      <main
+        className={
+          showingPublicLanding || isInviteRoute ? "flex-1" : "flex-1 pb-20 md:pb-12"
+        }
+      >
         {isAuthLoading ? (
           <div className="max-w-6xl mx-auto px-4 py-16 text-center">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600 mb-3" />

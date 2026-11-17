@@ -27,6 +27,7 @@ import {
   MessageCircle,
   ExternalLink,
   Smartphone,
+  KeyRound,
 } from "lucide-react";
 import Link from "next/link";
 import { format, isValid } from "date-fns";
@@ -67,6 +68,9 @@ export default function DashboardPage() {
   const [showEditPetModal, setShowEditPetModal] = useState(false);
   const [onboardingPhone, setOnboardingPhone] = useState("");
   const [connectingOnboardingWa, setConnectingOnboardingWa] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [joiningByCode, setJoiningByCode] = useState(false);
+  const [joinCodeError, setJoinCodeError] = useState<string | null>(null);
 
   // Estados de Exceção (Modo Por Exceção / Regular)
   const [feedingExceptionModalOpen, setFeedingExceptionModalOpen] = useState(false);
@@ -316,6 +320,42 @@ export default function DashboardPage() {
       }
     };
 
+    const handleJoinByCodeSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!joinCode.trim() || !currentUser?.id) return;
+      setJoiningByCode(true);
+      setJoinCodeError(null);
+      try {
+        const res = await fetch("/api/tutores", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "join_by_code",
+            userId: currentUser.id,
+            code: joinCode.trim(),
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          setJoinCodeError(json.error || "Código ou ID não encontrado.");
+          return;
+        }
+        if (json.pet?.id) {
+          setActivePetId(json.pet.id);
+        }
+        setActionSuccessMessage(
+          `✓ Você se vinculou a ${json.pet?.name || "um pet"} com sucesso!`
+        );
+        setTimeout(() => setActionSuccessMessage(null), 4000);
+        setJoinCode("");
+        triggerRefresh();
+      } catch {
+        setJoinCodeError("Falha de conexão ao tentar vincular pelo código.");
+      } finally {
+        setJoiningByCode(false);
+      }
+    };
+
     return (
       <div className="max-w-3xl mx-auto px-4 py-10 sm:py-14 space-y-6">
         {actionSuccessMessage && (
@@ -345,6 +385,45 @@ export default function DashboardPage() {
             <Plus className="w-4 h-4" />
             <span>Cadastrar Meu Primeiro Pet</span>
           </button>
+        </div>
+
+        {/* Vincular a um Pet Existente (Código ou ID) */}
+        <div className="bg-white rounded-3xl border border-indigo-200 p-5 sm:p-6 space-y-3 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
+              <KeyRound className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-black text-slate-900">
+                Vincular a um Pet Existente (Código ou ID)
+              </h3>
+              <p className="text-xs text-slate-500">
+                Outro tutor já cadastrou o pet? Cole o código de convite (<strong>CONV-...</strong>), código do pet (<strong>PET-...</strong>) ou o ID para acompanhar juntos.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleJoinByCodeSubmit} className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              required
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              placeholder="Ex: CONV-7K9M2P, PET-8A2C4F ou ID do pet"
+              className="flex-1 px-3 py-2 text-xs sm:text-sm font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={joiningByCode}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition cursor-pointer shrink-0"
+            >
+              {joiningByCode ? "Vinculando..." : "Vincular ao Pet"}
+            </button>
+          </form>
+
+          {joinCodeError && (
+            <p className="text-xs font-semibold text-rose-600">{joinCodeError}</p>
+          )}
         </div>
 
         {/* Onboarding do Assistente WhatsApp */}

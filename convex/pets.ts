@@ -1,6 +1,22 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 
+const SHARE_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function derivePetShareCode(pet: { _id: any; shareCode?: string }): string {
+  return pet.shareCode || `PET-${String(pet._id).slice(-6).toUpperCase()}`;
+}
+
+function buildRandomCode(prefix: string): string {
+  let suffix = "";
+  for (let i = 0; i < 6; i++) {
+    suffix += SHARE_CODE_CHARS.charAt(
+      Math.floor(Math.random() * SHARE_CODE_CHARS.length)
+    );
+  }
+  return `${prefix}-${suffix}`;
+}
+
 export const listByUser = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
@@ -15,6 +31,7 @@ export const listByUser = query({
         if (!pet) return null;
         return {
           ...pet,
+          shareCode: derivePetShareCode(pet),
           role: m.role,
           isPrimary: m.isPrimary,
         };
@@ -71,6 +88,7 @@ export const getById = query({
       .collect();
     return {
       ...pet,
+      shareCode: derivePetShareCode(pet),
       members: membersWithUser.filter((m) => m.user !== null),
       invitations: invitations.map((inv) => ({
         ...inv,
@@ -122,8 +140,21 @@ export const create = mutation({
       throw new Error("Usuário autenticado é obrigatório para cadastrar um pet.");
     }
 
-    // 1. Criar o Pet
-    const petId = await ctx.db.insert("pets", petData);
+    // 1. Gerar código de compartilhamento único (PET-XXXXXX) e criar o Pet
+    let shareCode = buildRandomCode("PET");
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const collision = await ctx.db
+        .query("pets")
+        .withIndex("by_share_code", (q) => q.eq("shareCode", shareCode))
+        .first();
+      if (!collision) break;
+      shareCode = buildRandomCode("PET");
+    }
+
+    const petId = await ctx.db.insert("pets", {
+      ...petData,
+      shareCode,
+    });
 
     // 2. Vincular o usuário como proprietário primário (owner)
     await ctx.db.insert("petMembers", {
