@@ -321,7 +321,7 @@ function parseVaccineFromText(messageText: string): {
   };
 }
 
-function parseMedicationFromText(messageText: string): {
+export interface ParsedMedicationInput {
   name: string;
   dosage?: string;
   unit?: string;
@@ -330,37 +330,34 @@ function parseMedicationFromText(messageText: string): {
   initialStockQuantity: number;
   veterinarian?: string;
   instructions?: string;
-} | null {
-  const clean = normalizeText(messageText);
-  const isMedCreation =
-    clean.includes("receitou") ||
-    clean.includes("prescreveu") ||
-    clean.includes("prescricao") ||
-    clean.startsWith("receita") ||
-    clean.includes("novo remedio") ||
-    clean.includes("novo medicamento") ||
-    clean.includes("iniciar tratamento") ||
-    clean.includes("comecar tratamento");
+}
 
-  if (!isMedCreation) return null;
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  // Extrair nome do medicamento após gatilho
-  let medName = "Medicamento";
-  const nameMatch = messageText.match(
-    /(?:receitou|prescreveu|receita\s*:|novo\s+rem[eé]dio|novo\s+medicamento|tratamento\s+com)\s+(?:o\s+|a\s+)?([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,28}?)(?=\s+\d|\s+de\s+\d|\s+cada|\s*\(|,|\.|$)/i
-  );
-  if (nameMatch && nameMatch[1]?.trim()) {
-    medName = nameMatch[1].trim();
+function stripPetReferences(text: string, petNames: string[] = []): string {
+  let result = text.trim();
+  const sortedPets = [...petNames]
+    .filter((p) => p && p.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+
+  for (const pet of sortedPets) {
+    const escaped = escapeRegex(pet.trim());
+    result = result
+      .replace(new RegExp(`^(?:o|a|para\\s+o|para\\s+a|pro|pra)?\\s*${escaped}\\s*[,:-]?\\s*`, "i"), "")
+      .replace(new RegExp(`\\s*(?:para\\s+o|para\\s+a|pro|pra|no|na|do|da)\\s+${escaped}\\b.*$`, "i"), "")
+      .trim();
   }
+  return result;
+}
 
-  const dosageMatch = messageText.match(/(\d+(?:[.,]\d+)?\s*(?:mg\/ml|mg|ml|mcg|ui))/i);
-  const dosage = dosageMatch ? dosageMatch[1].replace(/\s+/g, "") : undefined;
-
-  // Extrair horários explícitos (08:00, 20:00, 8h, 20h) que não estejam ligados a "12 em 12h" / "8 em 8h"
+function extractTimesAndFrequency(text: string): { times: string[]; hasExplicitHint: boolean } {
   const explicitTimes: string[] = [];
+  const clean = normalizeText(text);
   const timeRegex = /(?<!em\s)(?<!cada\s)\b(\d{1,2})\s*(?:h\b|:(\d{2}))/gi;
   let tm: RegExpExecArray | null;
-  while ((tm = timeRegex.exec(messageText)) !== null) {
+  while ((tm = timeRegex.exec(text)) !== null) {
     const h = parseInt(tm[1], 10);
     const min = tm[2] || "00";
     if (h >= 0 && h <= 23) {
@@ -370,39 +367,286 @@ function parseMedicationFromText(messageText: string): {
     }
   }
 
-  const times = normalizeMedicationTimes(explicitTimes, messageText);
+  if (explicitTimes.length === 0) {
+    if (clean.includes("de manha") && clean.includes("a noite")) {
+      return { times: ["08:00", "20:00"], hasExplicitHint: true };
+    }
+    if (clean.includes("a noite") || clean.includes("de noite") || clean.includes("antes de dormir")) {
+      return { times: ["20:00"], hasExplicitHint: true };
+    }
+    if (clean.includes("de tarde") || clean.includes("a tarde")) {
+      return { times: ["14:00"], hasExplicitHint: true };
+    }
+  }
 
-  const stockMatch = clean.match(
-    /(?:comprei|caixa\s+com|frasco\s+com|com|estoque\s+de)\s*(\d+(?:[.,]\d+)?)\s*(comprimidos?|capsulas?|doses?|gotas?|ml|unidades?)\b/
+  const hasFreqHint =
+    explicitTimes.length > 0 ||
+    clean.includes("12 em 12") ||
+    clean.includes("12/12") ||
+    clean.includes("8 em 8") ||
+    clean.includes("8/8") ||
+    clean.includes("6 em 6") ||
+    clean.includes("6/6") ||
+    clean.includes("2x") ||
+    clean.includes("duas vezes") ||
+    clean.includes("3x") ||
+    clean.includes("tres vezes") ||
+    clean.includes("4x") ||
+    clean.includes("quatro vezes");
+
+  const normalizedHint = clean.replace(/\b12\/12h?\b/g, "12 em 12h").replace(/\b8\/8h?\b/g, "8 em 8h").replace(/\b6\/6h?\b/g, "6 em 6h");
+  return {
+    times: normalizeMedicationTimes(explicitTimes, normalizedHint),
+    hasExplicitHint: hasFreqHint,
+  };
+}
+
+function isScheduleOrModifierOnlyFragment(fragment: string): boolean {
+  const clean = normalizeText(fragment)
+    .replace(/\b(?:comprei|caixa\s+com|frasco\s+com|com|estoque\s+de)\s*\d+(?:[.,]\d+)?\s*(?:comprimidos?|capsulas?|doses?|gotas?|ml|unidades?)\b/gi, "")
+    .replace(/\b(?:de|a\s+cada|cada)?\s*\d{1,2}(?:\/\d{1,2}|\s+em\s+\d{1,2})\s*h?(?:oras)?\b/gi, "")
+    .replace(/\b(?:as|a|das|de|por|ao|no|na)?\s*\d{1,2}\s*(?:h\b|hs\b|horas\b|:\d{2})/gi, "")
+    .replace(/\b(?:1x|2x|3x|4x|uma\s+vez|duas\s+vezes|tres\s+vezes|ao\s+dia|por\s+dia|todo\s+dia|diariamente|de\s+manha|pela\s+manha|a\s+tarde|de\s+tarde|a\s+noite|de\s+noite|antes\s+de\s+dormir|jejum|com\s+comida|apos\s+comer|meio|metade)\b/gi, "")
+    .replace(/[^a-z]/g, "")
+    .trim();
+  return clean.length < 2;
+}
+
+function parseMedicationsFromText(
+  messageText: string,
+  petNames: string[] = []
+): ParsedMedicationInput[] {
+  const clean = normalizeText(messageText);
+
+  // Ignorar perguntas e exceções/negações ("não toma", "não dei", "cuspiu", "pulei")
+  if (
+    clean.includes("?") ||
+    /\b(?:nao|nunca|deixou\s+de|parou\s+de|pulei|esqueci|cuspiu|vomitou)\b/.test(clean)
+  ) {
+    return [];
+  }
+
+  const hasFormalMedTrigger =
+    clean.includes("receitou") ||
+    clean.includes("prescreveu") ||
+    clean.includes("prescricao") ||
+    clean.startsWith("receita") ||
+    clean.includes("novo remedio") ||
+    clean.includes("novo medicamento") ||
+    clean.includes("iniciar tratamento") ||
+    clean.includes("comecar tratamento") ||
+    /\b(?:cadastre|cadastra|cadastrar|adiciona|adicionar)\s+(?:o\s+|a\s+|os\s+|as\s+)?(?:remedios?|medicamentos?|tratamentos?)\b/.test(
+      clean
+    );
+
+  const hasDosageOrMedUnit =
+    /\b\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|ml|mcg|ui)\b/.test(clean) ||
+    /\b(?:remedio|medicamento|comprimidos?|capsulas?|gotas?|colirio|pomada)\b/.test(clean);
+
+  const isRoutineVerbWithMed =
+    /\b(?:toma|tomando|tomar|faz\s+uso\s+de|usa|usando|cadastre|cadastra|cadastrar)\b/.test(
+      clean
+    ) &&
+    hasDosageOrMedUnit &&
+    !clean.includes("vacina") &&
+    !clean.includes("antirrabica") &&
+    !clean.includes("vermifugo") &&
+    !clean.includes("antipulgas");
+
+  if (!hasFormalMedTrigger && !isRoutineVerbWithMed) {
+    return [];
+  }
+
+  // Extrair corpo após o verbo/gatilho principal
+  let body = messageText.trim();
+  const triggerRegex =
+    /(?:receitou|prescreveu|prescri[çc][ãa]o\s*:?|receita\s*:?|novos?\s+rem[eé]dios?\s*:?|novos?\s+medicamentos?\s*:?|iniciar\s+tratamento\s+com|come[çc]ar\s+tratamento\s+com|cadastre(?:\s+os?|\s+as?)?(?:\s+rem[eé]dios?|\s+medicamentos?)?|cadastrar(?:\s+rem[eé]dios?|\s+medicamentos?)?|faz\s+uso\s+de|est[aá]\s+tomando|come[çc]ou\s+a\s+tomar|toma(?:\s+atualmente|\s+todo\s+dia|\s+diariamente)?|tomando|usa(?:\s+atualmente)?)\s+(?:o\s+|a\s+|os\s+|as\s+)?(.+)$/i;
+  const triggerMatch = body.match(triggerRegex);
+  if (triggerMatch?.[1]) {
+    body = triggerMatch[1].trim();
+  }
+
+  body = stripPetReferences(body, petNames);
+
+  const vetMatch = messageText.match(
+    /\b(?:dr\.?|dra\.?|vet\.?|veterin[aá]ri[oa])\s+([A-Za-zÀ-ú\s]{2,25}?)(?=,|\.|$)/i
   );
-  const unit = stockMatch
-    ? normalizeUnit(stockMatch[2])
-    : clean.includes("gota")
-    ? "gotas"
-    : clean.includes("ml")
-    ? "ml"
-    : "comprimidos";
-  const initialStockQuantity = stockMatch ? parseFloat(stockMatch[1].replace(",", ".")) : 10;
+  if (vetMatch) {
+    body = body.replace(vetMatch[0], "").trim();
+  }
 
-  const cleanWithoutStock = stockMatch ? clean.replace(stockMatch[0], " ") : clean;
-  const dosePerAdminMatch = cleanWithoutStock.match(
-    /(\d+(?:[.,]\d+)?)\s*(?:comprimido|capsula|dose|gota)/
+  const globalStockMatch = clean.match(
+    /(?:comprei|caixa\s+com|frasco\s+com|estoque\s+de)\s*(\d+(?:[.,]\d+)?)\s*(comprimidos?|capsulas?|doses?|gotas?|ml|unidades?)\b/
   );
-  const quantityPerAdministration = dosePerAdminMatch
-    ? parseFloat(dosePerAdminMatch[1].replace(",", "."))
-    : 1;
+  const globalTimesInfo = extractTimesAndFrequency(messageText);
 
-  const vetMatch = messageText.match(/\b(?:dr\.?|dra\.?|vet\.?|veterin[aá]ri[oa])\s+([A-Za-zÀ-ú\s]{2,25}?)(?=,|\.|$)/i);
+  // Separar múltiplos medicamentos por " e ", vírgula (fora de decimais como 5,4mg), ";" ou quebra de linha
+  const rawParts = body
+    .split(/\s+e\s+|(?<!\d)\s*,\s*(?!\d)|\s*;\s*|\s*\n+\s*/i)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const mergedParts: string[] = [];
+  for (const part of rawParts) {
+    if (mergedParts.length > 0 && isScheduleOrModifierOnlyFragment(part)) {
+      mergedParts[mergedParts.length - 1] = `${mergedParts[mergedParts.length - 1]} e ${part}`;
+    } else {
+      mergedParts.push(part);
+    }
+  }
+
+  const parsedResults: ParsedMedicationInput[] = [];
+
+  for (const part of mergedParts) {
+    const cleanPart = normalizeText(part);
+    const dosageMatch = part.match(
+      /(\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|ml|mcg|ui))/i
+    );
+    const dosage = dosageMatch ? dosageMatch[1].replace(/\s+/g, "") : undefined;
+
+    let medName = part
+      .replace(/^(?:o|a|os|as|um|uma|comprimido\s+de|remedio\s+|medicamento\s+)\s*/i, "")
+      .trim();
+
+    const cutMatch = medName.match(
+      /^([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,32}?)(?=\s+\d|\s+de\s+\d|\s+(?:cada|a\s+cada|todo\s+dia|diariamente|por\s+dia|ao\s+dia|em\s+\d|\(|às\b|as\b)|,|\.|$)/i
+    );
+    if (cutMatch?.[1]?.trim()) {
+      medName = cutMatch[1].trim();
+    }
+
+    medName = stripPetReferences(medName, petNames).replace(/^(?:o|a)\s+/i, "").trim();
+    if (!medName || medName.length < 2) continue;
+
+    const partTimesInfo = extractTimesAndFrequency(part);
+    const times = partTimesInfo.hasExplicitHint
+      ? partTimesInfo.times
+      : globalTimesInfo.times;
+
+    const partStockMatch = cleanPart.match(
+      /(?:comprei|caixa\s+com|frasco\s+com|com|estoque\s+de)\s*(\d+(?:[.,]\d+)?)\s*(comprimidos?|capsulas?|doses?|gotas?|ml|unidades?)\b/
+    );
+    const effectiveStock = partStockMatch || globalStockMatch;
+
+    const unit = effectiveStock
+      ? normalizeUnit(effectiveStock[2])
+      : cleanPart.includes("gota") || clean.includes("gota")
+      ? "gotas"
+      : /\b\d+(?:[.,]\d+)?\s*ml\b/i.test(part)
+      ? "ml"
+      : "comprimidos";
+
+    const initialStockQuantity = effectiveStock
+      ? parseFloat(effectiveStock[1].replace(",", "."))
+      : 10;
+
+    const cleanWithoutStock = partStockMatch
+      ? cleanPart.replace(partStockMatch[0], " ")
+      : cleanPart;
+    const dosePerAdminMatch = cleanWithoutStock.match(
+      /(\d+(?:[.,]\d+)?)\s*(?:comprimido|capsula|dose|gota)/
+    );
+    const quantityPerAdministration = dosePerAdminMatch
+      ? parseFloat(dosePerAdminMatch[1].replace(",", "."))
+      : cleanWithoutStock.includes("meio comprimido") || cleanWithoutStock.includes("1/2")
+      ? 0.5
+      : 1;
+
+    parsedResults.push({
+      name: medName.charAt(0).toUpperCase() + medName.slice(1),
+      dosage,
+      unit,
+      times,
+      quantityPerAdministration,
+      initialStockQuantity,
+      veterinarian: vetMatch ? vetMatch[1].trim() : undefined,
+      instructions: messageText.trim(),
+    });
+  }
+
+  return parsedResults;
+}
+
+function parseInventoryItemCreationFromText(
+  messageText: string,
+  petNames: string[] = []
+): {
+  name: string;
+  category: string;
+  unit: string;
+  initialQuantity: number;
+} | null {
+  const clean = normalizeText(messageText);
+  if (
+    clean.includes("?") ||
+    clean.includes("vacina") ||
+    clean.includes("remedio") ||
+    clean.includes("medicamento")
+  ) {
+    return null;
+  }
+
+  const createMatch = messageText
+    .trim()
+    .match(
+      /^(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir)\s+(?:a\s+|o\s+|um\s+|uma\s+)?(?:ra[çc][ãa]o\s+|item\s+|comida\s+|petisco\s+)?(.+)$/i
+    );
+  if (!createMatch?.[1]) return null;
+
+  let itemPart = stripPetReferences(createMatch[1], petNames)
+    .replace(/\s+(?:no\s+estoque|em\s+estoque|no\s+petrec)\b.*$/i, "")
+    .trim();
+
+  const qtyMatch = itemPart.match(
+    /(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|unidades?|un)\b/i
+  );
+  let initialQuantity = 0;
+  let unit = "g";
+
+  if (qtyMatch) {
+    const rawQty = parseFloat(qtyMatch[1].replace(",", "."));
+    const spokenUnit = normalizeUnit(qtyMatch[2]);
+    if (spokenUnit === "kg") {
+      initialQuantity = Math.round(rawQty * 1000);
+      unit = "g";
+    } else if (spokenUnit === "g") {
+      initialQuantity = rawQty;
+      unit = "g";
+    } else {
+      initialQuantity = rawQty;
+      unit = spokenUnit;
+    }
+    itemPart = itemPart
+      .replace(qtyMatch[0], " ")
+      .replace(/\b(?:de|com)\s*$/i, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  if (!itemPart || itemPart.length < 2) return null;
+
+  const cleanName = normalizeText(itemPart);
+  const category =
+    cleanName.includes("petisco") ||
+    cleanName.includes("biscoito") ||
+    cleanName.includes("ossinho") ||
+    cleanName.includes("snack")
+      ? "petisco"
+      : cleanName.includes("tapete") ||
+        cleanName.includes("areia") ||
+        cleanName.includes("shampoo")
+      ? "higiene"
+      : "racao";
+
+  if (category !== "racao" && !qtyMatch) {
+    unit = "unidades";
+  }
 
   return {
-    name: medName.charAt(0).toUpperCase() + medName.slice(1),
-    dosage,
+    name: itemPart.charAt(0).toUpperCase() + itemPart.slice(1),
+    category,
     unit,
-    times,
-    quantityPerAdministration,
-    initialStockQuantity,
-    veterinarian: vetMatch ? vetMatch[1].trim() : undefined,
-    instructions: messageText.trim(),
+    initialQuantity,
   };
 }
 
@@ -703,17 +947,17 @@ const ASSISTANT_TOOLS = [
     type: "function" as const,
     name: "create_medication",
     description:
-      "Cadastra um novo medicamento e seu cronograma de horários a partir de receita veterinária (foto ou texto/áudio).",
+      "Cadastra um novo medicamento e seu cronograma de horários na rotina do pet (seja por receita em foto/áudio ou texto como 'Gengibre toma Sepurim 20mg e Retenic 5mg', chamando uma vez para cada medicamento).",
     parameters: {
       type: "object",
       properties: {
         name: {
           type: "string",
-          description: "Nome do medicamento (ex: 'Apoquel', 'Dipirona').",
+          description: "Nome do medicamento (ex: 'Apoquel', 'Sepurim', 'Retenic').",
         },
         dosage: {
           type: "string",
-          description: "Concentração ou dosagem (ex: '5,4mg', '50mg/ml').",
+          description: "Concentração ou dosagem (ex: '20mg', '5mg', '5,4mg', '50mg/ml').",
         },
         unit: {
           type: "string",
@@ -739,6 +983,38 @@ const ASSISTANT_TOOLS = [
         veterinarian: {
           type: "string",
           description: "Veterinário prescritor, se houver.",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "create_inventory_item",
+    description:
+      "Cadastra um novo item de ração, petisco ou higiene no estoque do pet mesmo sem compra inicial (ex: 'Cadastre Fresh Meat para o Tonico').",
+    parameters: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Nome do produto ou ração (ex: 'Fresh Meat', 'Ração Premier').",
+        },
+        category: {
+          type: "string",
+          description: "Categoria: 'racao', 'petisco', 'higiene' ou 'outro'.",
+        },
+        unit: {
+          type: "string",
+          description: "Unidade padrão: 'g' para ração ou 'unidades'.",
+        },
+        initialQuantity: {
+          type: "number",
+          description: "Quantidade inicial em estoque na unidade definida (padrão: 0).",
+        },
+        notes: {
+          type: "string",
+          description: "Observação opcional.",
         },
       },
       required: ["name"],
@@ -840,7 +1116,7 @@ function buildSystemInstruction(snapshot: PetContextSnapshot): string {
     `4. Se o tutor disser que comprou ou chegou algo (ração, comprimidos, etc.), chame 'record_purchase'.\n` +
     `5. Se o tutor informar ou alterar quanto o pet come por dia (ex: "o consumo diário é 240g", "come 300g por dia"), chame 'update_daily_consumption'.\n` +
     `6. Se o tutor informou quanto sobrou fisicamente após pesar ou contar (ex: "pesei o balde e tem 4,2kg"), chame 'adjust_stock'.\n` +
-    `7. Se o tutor enviar foto ou áudio de receita veterinária / novo tratamento, chame 'create_medication'. Se for carteira de vacinação ou vacina aplicada, chame 'record_vaccine'.\n` +
+    `7. Se o tutor informar medicamentos que o pet toma ou enviar foto/áudio de receita veterinária (ex: "Gengibre toma Sepurim 20mg e Retenic 5mg", "receitou Apoquel"), chame 'create_medication' UMA VEZ para cada medicamento mencionado. Se for carteira de vacinação ou vacina aplicada, chame 'record_vaccine'. Se pedir para cadastrar uma nova ração/item sem quantidade (ex: "Cadastre Fresh Meat"), chame 'create_inventory_item'.\n` +
     `8. Se o tutor relatar sintomas ou observações clínicas (ex: diarreia, coceira, mancar), chame 'record_clinical_note'.\n` +
     `9. Se a mensagem ou áudio contiver múltiplas ações (ex: jejum e compra), você pode chamar mais de uma ferramenta.\n` +
     `10. Responda em português brasileiro claro, conciso e amigável para WhatsApp.`
@@ -1330,7 +1606,58 @@ export async function executeAssistantToolCall(params: {
       const initialStock = Number(args.initialStockQuantity) || 10;
       const unit = args.unit || "comprimidos";
 
-      await convex.mutation(api.medications.create, {
+      const existingMed = snapshot.medications.find(
+        (m: any) =>
+          m.status !== "rejected" &&
+          normalizeText(m.name) === normalizeText(medName)
+      );
+
+      if (existingMed) {
+        if (args.dosage && existingMed.dosage !== args.dosage && existingMed._id) {
+          const existingTimes =
+            Array.isArray(existingMed.schedules) && existingMed.schedules[0]?.times?.length
+              ? existingMed.schedules[0].times
+              : normalizedTimes;
+          const existingQtyPerAdmin =
+            existingMed.schedules?.[0]?.quantityPerAdministration || qtyPerAdmin;
+          const existingCurrentQty =
+            existingMed.inventoryItem?.currentQuantity ?? initialStock;
+          const existingLeadDays =
+            existingMed.inventoryItem?.purchaseLeadTimeDays ?? 5;
+
+          await convex.mutation(api.medications.update, {
+            medicationId: existingMed._id,
+            userId,
+            name: existingMed.name,
+            dosage: args.dosage,
+            unit: existingMed.unit || unit,
+            instructions: args.instructions || existingMed.instructions,
+            veterinarian: args.veterinarian || existingMed.veterinarian,
+            times: existingTimes,
+            quantityPerAdministration: existingQtyPerAdmin,
+            currentQuantity: existingCurrentQty,
+            purchaseLeadTimeDays: existingLeadDays,
+          });
+          existingMed.dosage = args.dosage;
+
+          return {
+            replyText:
+              `💊 *Medicamento Atualizado!*\n\n` +
+              `• Tratamento: *${existingMed.name}* (${args.dosage})\n` +
+              `• Pet: *${pet.name}*\n` +
+              `• Horários: *${existingTimes.join(", ")}*`,
+            actionTaken: "medication_updated",
+          };
+        }
+
+        return {
+          replyText:
+            `ℹ️ *${existingMed.name}*${existingMed.dosage ? ` (${existingMed.dosage})` : ""} já está cadastrado na rotina de *${pet.name}*.`,
+          actionTaken: "medication_already_exists",
+        };
+      }
+
+      const medId = await convex.mutation(api.medications.create, {
         petId: pet._id,
         userId,
         name: medName,
@@ -1345,6 +1672,14 @@ export async function executeAssistantToolCall(params: {
         status: "active",
       });
 
+      snapshot.medications.push({
+        _id: medId,
+        name: medName,
+        dosage: args.dosage,
+        unit,
+        status: "active",
+      });
+
       return {
         replyText:
           `💊 *Medicamento & Receita Cadastrados!*\n\n` +
@@ -1354,6 +1689,66 @@ export async function executeAssistantToolCall(params: {
           `• Estoque inicial: *${initialStock} ${unit}*\n\n` +
           `⏰ A rotina já foi ativada no PetRec!`,
         actionTaken: "medication_created",
+      };
+    }
+
+    case "create_inventory_item": {
+      const itemName = (args.name || "Ração").trim();
+      const category = args.category || "racao";
+      const unit = args.unit || (category === "racao" ? "g" : "unidades");
+      const initialQty =
+        typeof args.initialQuantity === "number" && !isNaN(args.initialQuantity)
+          ? Math.max(0, args.initialQuantity)
+          : 0;
+
+      const existing = snapshot.inventory.find(
+        (i) => normalizeText(i.name) === normalizeText(itemName)
+      );
+      if (existing) {
+        return {
+          replyText:
+            `ℹ️ *${existing.name}* já está cadastrado no estoque de *${pet.name}* (saldo atual: *${existing.currentQuantity} ${existing.unit}*).`,
+          actionTaken: "inventory_item_already_exists",
+        };
+      }
+
+      const itemId = await convex.mutation(api.inventory.createItem, {
+        petId: pet._id,
+        name: itemName,
+        category,
+        unit,
+        currentQuantity: initialQty,
+        dailyConsumption: 0,
+        purchaseLeadTimeDays: 7,
+        notes: args.notes || "Cadastrado via WhatsApp",
+        userId,
+      });
+
+      snapshot.inventory.push({
+        _id: itemId,
+        name: itemName,
+        category,
+        unit,
+        currentQuantity: initialQty,
+        dailyConsumption: 0,
+        purchaseLeadTimeDays: 7,
+        status: initialQty > 0 ? "OK" : "SEM ESTOQUE",
+        forecast: calculateStockForecast({
+          currentQuantity: initialQty,
+          dailyConsumption: 0,
+          unit,
+          purchaseLeadTimeDays: 7,
+        }),
+      });
+
+      return {
+        replyText:
+          `📦 *Item Cadastrado no Estoque!*\n\n` +
+          `• Item: *${itemName}*\n` +
+          `• Pet: *${pet.name}*\n` +
+          `• Categoria: *${category}* | Saldo inicial: *${initialQty} ${unit}*\n\n` +
+          `💡 _Você pode informar compras ou consumo diário (ex: "Comprei 15kg de ${itemName}" ou "O consumo diário é 240g")._`,
+        actionTaken: "inventory_item_created",
       };
     }
 
@@ -1696,13 +2091,50 @@ async function interpretSingleClauseNlu(
     }
   }
 
-  // 1e. Receita / Novo Medicamento (antes de compra para capturar "Receitou X, comprei 20 comprimidos")
-  const medCreation = parseMedicationFromText(messageText);
-  if (medCreation) {
+  // 1e. Receita / Uso contínuo / Novos Medicamentos (suporta 1 ou múltiplos medicamentos na mesma frase)
+  const petNamesList = snapshot.allPets.map((p: any) => p.name);
+  const medCreations = parseMedicationsFromText(messageText, petNamesList);
+  if (medCreations.length > 0) {
+    const replies: string[] = [];
+    const actions: string[] = [];
+    let finalState = "IDLE";
+    let finalPayload: string | undefined;
+
+    for (const med of medCreations) {
+      const exec = await executeAssistantToolCall({
+        convex,
+        toolName: "create_medication",
+        args: med,
+        snapshot,
+        userId,
+      });
+      replies.push(exec.replyText);
+      if (exec.actionTaken && !actions.includes(exec.actionTaken)) {
+        actions.push(exec.actionTaken);
+      }
+      if (exec.nextState && exec.nextState !== "IDLE") {
+        finalState = exec.nextState;
+        finalPayload = exec.pendingActionPayload;
+      }
+    }
+
+    return {
+      handled: true,
+      replyText: replies.join("\n\n---\n\n"),
+      actionTaken: actions.join(",") || "medication_created",
+      nextState: finalState,
+      pendingActionPayload: finalPayload,
+      usedGemini: false,
+    };
+  }
+
+  // 1f. Vacina / Imunização aplicada
+  const vaccineData = parseVaccineFromText(messageText);
+  if (vaccineData) {
     const exec = await executeAssistantToolCall({
       convex,
-      toolName: "create_medication",
-      args: medCreation,
+      toolName: "record_vaccine",
+      args: vaccineData,
       snapshot,
       userId,
     });
@@ -1717,13 +2149,19 @@ async function interpretSingleClauseNlu(
     };
   }
 
-  // 1f. Vacina / Imunização aplicada
-  const vaccineData = parseVaccineFromText(messageText);
-  if (vaccineData) {
+  // 1g. Cadastro direto de item/ração no estoque ("Cadastre Fresh Meat para o Tonico")
+  const inventoryCreation = parseInventoryItemCreationFromText(messageText, petNamesList);
+  if (inventoryCreation) {
     const exec = await executeAssistantToolCall({
       convex,
-      toolName: "record_vaccine",
-      args: vaccineData,
+      toolName: "create_inventory_item",
+      args: {
+        name: inventoryCreation.name,
+        category: inventoryCreation.category,
+        unit: inventoryCreation.unit,
+        initialQuantity: inventoryCreation.initialQuantity,
+        notes: messageText.trim(),
+      },
       snapshot,
       userId,
     });
@@ -2153,7 +2591,6 @@ export async function processNaturalLanguageWithAI(params: {
         system_instruction: buildSystemInstruction(snapshot),
         input: interactionInput,
         tools: ASSISTANT_TOOLS,
-        generation_config: { thinking_level: "minimal" },
         store: false,
       });
 
