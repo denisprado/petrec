@@ -212,11 +212,14 @@ export default defineSchema({
   }).index("by_pet", ["petId"]),
 
   whatsappWebhookLogs: defineTable({
+    messageId: v.optional(v.string()),
     from: v.string(),
     messageText: v.string(),
     replyText: v.string(),
-    status: v.string(), // "SUCCESS", "META_ERROR", "CONFIG_MISSING"
+    status: v.string(), // "PROCESSING", "SUCCESS", "META_ERROR", "CONFIG_MISSING"
     metaError: v.optional(v.string()),
     timestamp: v.number(),
-  }).index("by_timestamp", ["timestamp"]),
+  })
+    .index("by_timestamp", ["timestamp"])
+    .index("by_message_id", ["messageId"]),
 });

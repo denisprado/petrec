@@ -746,6 +746,26 @@ const ASSISTANT_TOOLS = [
   },
   {
     type: "function" as const,
+    name: "update_daily_consumption",
+    description:
+      "Configura ou altera o consumo diário padrão de uma ração/item no estoque (ex: 'O consumo diário de ração é 240g', 'O Gengibre come 240g por dia').",
+    parameters: {
+      type: "object",
+      properties: {
+        itemName: {
+          type: "string",
+          description: "Nome da ração se especificado.",
+        },
+        dailyQuantityGrams: {
+          type: "number",
+          description: "Quantidade consumida por dia em gramas.",
+        },
+      },
+      required: ["dailyQuantityGrams"],
+    },
+  },
+  {
+    type: "function" as const,
     name: "answer_question",
     description:
       "Responde perguntas informativas do tutor com base nos dados atuais do pet (previsão de término da ração, status de remédios de hoje, peso, vacinas, lista de compras).",
@@ -818,11 +838,12 @@ function buildSystemInstruction(snapshot: PetContextSnapshot): string {
     `2. Se o tutor mencionar que o pet deixou comida/não comeu parte ou toda a refeição (ex: "deixou metade do pote", "não quis jantar", "jejum"), chame 'record_feeding_exception'. Assuma 2 refeições/dia caso o consumo diário esteja cadastrado e o tutor dê uma fração (metade de 1 refeição = fractionOfMealNotConsumed: 0.5; refeição inteira = 1; dia todo = 2).\n` +
     `3. Se o tutor informar que NÃO deu um remédio, o pet cuspiu, vomitou o remédio ou pulou um horário, chame 'update_medication_dose' com status 'skipped' e informe medicationName/scheduledTimeHint.\n` +
     `4. Se o tutor disser que comprou ou chegou algo (ração, comprimidos, etc.), chame 'record_purchase'.\n` +
-    `5. Se o tutor informou quanto sobrou fisicamente após pesar ou contar (ex: "pesei o balde e tem 4,2kg"), chame 'adjust_stock'.\n` +
-    `6. Se o tutor enviar foto ou áudio de receita veterinária / novo tratamento, chame 'create_medication'. Se for carteira de vacinação ou vacina aplicada, chame 'record_vaccine'.\n` +
-    `7. Se o tutor relatar sintomas ou observações clínicas (ex: diarreia, coceira, mancar), chame 'record_clinical_note'.\n` +
-    `8. Se a mensagem ou áudio contiver múltiplas ações (ex: jejum e compra), você pode chamar mais de uma ferramenta.\n` +
-    `9. Responda em português brasileiro claro, conciso e amigável para WhatsApp.`
+    `5. Se o tutor informar ou alterar quanto o pet come por dia (ex: "o consumo diário é 240g", "come 300g por dia"), chame 'update_daily_consumption'.\n` +
+    `6. Se o tutor informou quanto sobrou fisicamente após pesar ou contar (ex: "pesei o balde e tem 4,2kg"), chame 'adjust_stock'.\n` +
+    `7. Se o tutor enviar foto ou áudio de receita veterinária / novo tratamento, chame 'create_medication'. Se for carteira de vacinação ou vacina aplicada, chame 'record_vaccine'.\n` +
+    `8. Se o tutor relatar sintomas ou observações clínicas (ex: diarreia, coceira, mancar), chame 'record_clinical_note'.\n` +
+    `9. Se a mensagem ou áudio contiver múltiplas ações (ex: jejum e compra), você pode chamar mais de uma ferramenta.\n` +
+    `10. Responda em português brasileiro claro, conciso e amigável para WhatsApp.`
   );
 }
 
@@ -1336,6 +1357,63 @@ export async function executeAssistantToolCall(params: {
       };
     }
 
+    case "update_daily_consumption": {
+      const resolved = resolveInventoryItemOrDisambiguate({
+        inventory,
+        itemName: args.itemName,
+        preferredCategory: "racao",
+        toolName,
+        args,
+        petName: pet.name,
+      });
+      if ("disambiguation" in resolved) return resolved.disambiguation;
+      if ("notFound" in resolved) {
+        return {
+          replyText: `🥣 Não encontrei nenhuma ração cadastrada no estoque de *${pet.name}* para configurar o consumo diário.`,
+        };
+      }
+      const racao = resolved.item;
+      const rawDaily = Number(args.dailyQuantityGrams);
+      if (!rawDaily || rawDaily <= 0) {
+        return { replyText: "⚠️ Informe um consumo diário válido em gramas (ex: 240g)." };
+      }
+
+      const convertedDaily = convertQuantityForTargetUnit(rawDaily, "g", racao.unit);
+      const forecast = calculateStockForecast({
+        currentQuantity: racao.currentQuantity,
+        dailyConsumption: convertedDaily,
+        unit: racao.unit,
+        purchaseLeadTimeDays: racao.purchaseLeadTimeDays,
+      });
+
+      await convex.mutation(api.inventory.updateParams, {
+        id: racao._id,
+        dailyConsumption: convertedDaily,
+        status: forecast.status,
+        estimatedEndDate: forecast.estimatedEndDate
+          ? forecast.estimatedEndDate.toISOString()
+          : undefined,
+        userId,
+      });
+
+      const daysStr =
+        forecast.daysRemaining === Infinity
+          ? "indeterminado"
+          : `${Math.round(forecast.daysRemaining)} dia(s)`;
+      const endStr = forecast.estimatedEndDate
+        ? format(forecast.estimatedEndDate, "dd/MM/yyyy", { locale: ptBR })
+        : "não calculada";
+
+      return {
+        replyText:
+          `🥣 *Consumo Diário Configurado!*\n\n` +
+          `• Pet: *${pet.name}* | Item: *${racao.name}*\n` +
+          `• Consumo definido: *${convertedDaily} ${racao.unit}/dia*\n` +
+          `• Saldo atual (*${racao.currentQuantity} ${racao.unit}*): dura aprox. *${daysStr}* (até *${endStr}*, status: *${forecast.status}*).`,
+        actionTaken: "daily_consumption_updated",
+      };
+    }
+
     case "answer_question": {
       return {
         replyText: args.answerText || `🐾 Tudo certo com *${pet.name}*!`,
@@ -1844,6 +1922,42 @@ async function interpretSingleClauseNlu(
     };
   }
 
+  // 5a-config. Configuração de consumo diário ("O consumo diário de ração é 240g", "come 240g por dia")
+  const isDailyConfig =
+    (clean.includes("consumo diario") ||
+      clean.includes("por dia") ||
+      clean.includes("diariamente") ||
+      clean.includes("porcao diaria") ||
+      /\bcome\s+\d+/.test(clean)) &&
+    !clean.includes("nao ") &&
+    !clean.includes("comeu");
+
+  if (isDailyConfig) {
+    const dailyQtyMatch = clean.match(/(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas)?\b/);
+    if (dailyQtyMatch) {
+      const rawQty = parseFloat(dailyQtyMatch[1].replace(",", "."));
+      const unit = normalizeUnit(dailyQtyMatch[2] || "g");
+      const grams = unit === "kg" ? Math.round(rawQty * 1000) : rawQty;
+      if (grams > 0) {
+        const exec = await executeAssistantToolCall({
+          convex,
+          toolName: "update_daily_consumption",
+          args: { dailyQuantityGrams: grams },
+          snapshot,
+          userId,
+        });
+        return {
+          handled: true,
+          replyText: exec.replyText,
+          actionTaken: exec.actionTaken,
+          nextState: exec.nextState || "IDLE",
+          pendingActionPayload: exec.pendingActionPayload,
+          usedGemini: false,
+        };
+      }
+    }
+  }
+
   // 5b. Consumo explícito de ração ("O Rex comeu 200g", "dei 300g de ração")
   const explicitFeedingMatch = clean.match(
     /(?:comeu|alimentei|dei|coloquei)\s+(?:cerca\s+de\s+)?(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas)?\b/
@@ -1876,9 +1990,9 @@ async function interpretSingleClauseNlu(
     }
   }
 
-  // 5c. Peso explícito em frases livres ("O Rex pesou 32,5kg", "peso atual 18kg")
+  // 5c. Peso explícito em frases livres ("O Tonico pesa 12,7kg", "O Rex pesou 32,5kg", "está com 18kg")
   const explicitWeightInSentence = clean.match(
-    /(?:pesou|pesei|peso(?:\s+de)?|pesando)\s+(\d+(?:[.,]\d+)?)\s*(?:kg|kilos?|quilos?)?\b/
+    /(?:pesou|pesei|pesa|peso(?:\s+de|\s+atual)?|pesando|esta\s+com|ta\s+com)\s+(\d+(?:[.,]\d+)?)\s*(?:kg|kilos?|quilos?)?\b/
   );
   if (explicitWeightInSentence) {
     const val = parseFloat(explicitWeightInSentence[1].replace(",", "."));
@@ -1985,6 +2099,19 @@ export async function processNaturalLanguageWithAI(params: {
       ? "📸 *Imagem analisada:*\n\n"
       : "";
 
+  // Caminho ultrarrápido (<300ms): tentar NLU contextual primeiro quando há texto/legenda
+  if (!mediaType || hasMeaningfulCaption) {
+    const nluRes = await interpretWithContextualNlu(messageText, snapshot, convex, userId);
+    if (nluRes.handled) {
+      return mediaType
+        ? {
+            ...nluRes,
+            replyText: `${mediaType === "audio" ? "🎙️ *Áudio interpretado:*\n\n" : "📸 *Imagem interpretada:*\n\n"}${nluRes.replyText}`,
+          }
+        : nluRes;
+    }
+  }
+
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (apiKey) {
     try {
@@ -2026,6 +2153,7 @@ export async function processNaturalLanguageWithAI(params: {
         system_instruction: buildSystemInstruction(snapshot),
         input: interactionInput,
         tools: ASSISTANT_TOOLS,
+        generation_config: { thinking_level: "minimal" },
         store: false,
       });
 
@@ -2076,7 +2204,7 @@ export async function processNaturalLanguageWithAI(params: {
         };
       }
     } catch (aiErr) {
-      console.error("[WhatsApp AI Assistant] Erro ao consultar Gemini, usando NLU local:", aiErr);
+      console.error("[WhatsApp AI Assistant] Erro ao consultar Gemini:", aiErr);
     }
   }
 
@@ -2094,12 +2222,10 @@ export async function processNaturalLanguageWithAI(params: {
     };
   }
 
-  const nluRes = await interpretWithContextualNlu(messageText, snapshot, convex, userId);
-  if (nluRes.handled && mediaType) {
-    return {
-      ...nluRes,
-      replyText: `${mediaType === "audio" ? "🎙️ *Áudio interpretado:*\n\n" : "📸 *Imagem interpretada:*\n\n"}${nluRes.replyText}`,
-    };
-  }
-  return nluRes;
+  return {
+    handled: false,
+    replyText: "",
+    nextState: "IDLE",
+    usedGemini: false,
+  };
 }

@@ -56,14 +56,19 @@ function findAllPetsMentionedInText(text: string, pets: any[]): any[] {
 
 async function syncPetRoutineSafe(pet: any): Promise<void> {
   try {
-    await convex.mutation(api.medications.syncRoutineMedications, {
-      petId: pet._id,
-    });
-    if (pet.routineMode !== "manual") {
-      await convex.mutation(api.inventory.syncRoutineConsumption, {
+    const tasks: Promise<any>[] = [
+      convex.mutation(api.medications.syncRoutineMedications, {
         petId: pet._id,
-      });
+      }),
+    ];
+    if (pet.routineMode !== "manual") {
+      tasks.push(
+        convex.mutation(api.inventory.syncRoutineConsumption, {
+          petId: pet._id,
+        })
+      );
     }
+    await Promise.all(tasks);
   } catch (syncErr) {
     console.warn("[WhatsAppBot] Aviso ao sincronizar rotina:", syncErr);
   }

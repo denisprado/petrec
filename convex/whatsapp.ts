@@ -189,8 +189,57 @@ export const updateSession = mutation({
   },
 });
 
+export const claimWebhookMessage = mutation({
+  args: {
+    messageId: v.string(),
+    from: v.string(),
+    messageText: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existingById = await ctx.db
+      .query("whatsappWebhookLogs")
+      .withIndex("by_message_id", (q) => q.eq("messageId", args.messageId))
+      .first();
+
+    if (existingById) {
+      return { alreadyProcessed: true, logId: existingById._id };
+    }
+
+    const now = Date.now();
+    const recentLogs = await ctx.db
+      .query("whatsappWebhookLogs")
+      .withIndex("by_timestamp")
+      .order("desc")
+      .take(5);
+
+    const recentDuplicate = recentLogs.find(
+      (l) =>
+        l.from === args.from &&
+        l.messageText === args.messageText &&
+        now - l.timestamp < 20000
+    );
+
+    if (recentDuplicate) {
+      return { alreadyProcessed: true, logId: recentDuplicate._id };
+    }
+
+    const logId = await ctx.db.insert("whatsappWebhookLogs", {
+      messageId: args.messageId,
+      from: args.from,
+      messageText: args.messageText,
+      replyText: "[Processando...]",
+      status: "PROCESSING",
+      timestamp: now,
+    });
+
+    return { alreadyProcessed: false, logId };
+  },
+});
+
 export const logWebhookEvent = mutation({
   args: {
+    logId: v.optional(v.id("whatsappWebhookLogs")),
+    messageId: v.optional(v.string()),
     from: v.string(),
     messageText: v.string(),
     replyText: v.string(),
@@ -198,7 +247,17 @@ export const logWebhookEvent = mutation({
     metaError: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    if (args.logId) {
+      await ctx.db.patch(args.logId, {
+        replyText: args.replyText,
+        status: args.status,
+        metaError: args.metaError,
+      });
+      return args.logId;
+    }
+
     return await ctx.db.insert("whatsappWebhookLogs", {
+      messageId: args.messageId,
       from: args.from,
       messageText: args.messageText,
       replyText: args.replyText,

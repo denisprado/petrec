@@ -8,6 +8,17 @@ const convex = new ConvexHttpClient(
     "https://robust-bullfrog-290.convex.cloud"
 );
 
+// Barreira instantânea em memória para impedir reprocessamento paralelo na mesma instância
+const processedMessageIds = new Set<string>();
+
+function trackMessageId(id: string) {
+  if (processedMessageIds.size > 500) {
+    const first = processedMessageIds.values().next().value;
+    if (first) processedMessageIds.delete(first);
+  }
+  processedMessageIds.add(id);
+}
+
 const VERIFY_TOKEN =
   process.env.WHATSAPP_VERIFY_TOKEN ||
   process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN ||
@@ -54,10 +65,21 @@ export async function POST(request: Request) {
               const from = message.from; // Número do usuário sem '+' (ex: "5519988887777")
               if (!from) continue;
 
+              const messageId: string =
+                message.id || `${from}:${message.timestamp || Date.now()}`;
+
+              if (processedMessageIds.has(messageId)) {
+                console.log(
+                  `[WhatsApp Webhook] Mensagem duplicada ignorada (memória): ${messageId}`
+                );
+                continue;
+              }
+              trackMessageId(messageId);
+
               const apiToken =
                 process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
 
-              // Extrair texto ou mídia (áudio / imagem) da mensagem recebida
+              // Extrair texto ou identificação inicial da mídia antes do claim
               let text = "";
               let mediaType: "audio" | "image" | undefined;
               let mediaBase64: string | undefined;
@@ -77,30 +99,50 @@ export async function POST(request: Request) {
                 mediaType = "audio";
                 mediaMimeType = (message.audio.mime_type || "audio/ogg").split(";")[0].trim();
                 text = "[Áudio recebido]";
-                if (apiToken) {
-                  const downloaded = await downloadMetaMediaAsBase64(message.audio.id, apiToken);
-                  if (downloaded) {
-                    mediaBase64 = downloaded.base64;
-                    mediaMimeType = downloaded.mimeType;
-                  }
-                }
               } else if (message.type === "image" && message.image?.id) {
                 mediaType = "image";
                 mediaMimeType = (message.image.mime_type || "image/jpeg").split(";")[0].trim();
                 text = message.image.caption?.trim() || "[Imagem recebida]";
-                if (apiToken) {
-                  const downloaded = await downloadMetaMediaAsBase64(message.image.id, apiToken);
-                  if (downloaded) {
-                    mediaBase64 = downloaded.base64;
-                    mediaMimeType = downloaded.mimeType;
-                  }
-                }
               }
 
               if (!text.trim() && !mediaType) continue;
 
+              // Deduplicação atômica no Convex (evita retentativas e execução dupla da Meta)
+              let claimedLogId: any = undefined;
+              try {
+                const claim = await convex.mutation(api.whatsapp.claimWebhookMessage, {
+                  messageId,
+                  from: `+${from}`,
+                  messageText: text,
+                });
+                if (claim.alreadyProcessed) {
+                  console.log(
+                    `[WhatsApp Webhook] Mensagem duplicada ignorada (Convex): ${messageId}`
+                  );
+                  continue;
+                }
+                claimedLogId = claim.logId;
+              } catch (claimErr) {
+                console.warn("[WhatsApp Webhook] Aviso ao verificar idempotência no Convex:", claimErr);
+              }
+
+              // Baixar mídia somente após confirmar que a mensagem é inédita
+              if (mediaType === "audio" && message.audio?.id && apiToken) {
+                const downloaded = await downloadMetaMediaAsBase64(message.audio.id, apiToken);
+                if (downloaded) {
+                  mediaBase64 = downloaded.base64;
+                  mediaMimeType = downloaded.mimeType;
+                }
+              } else if (mediaType === "image" && message.image?.id && apiToken) {
+                const downloaded = await downloadMetaMediaAsBase64(message.image.id, apiToken);
+                if (downloaded) {
+                  mediaBase64 = downloaded.base64;
+                  mediaMimeType = downloaded.mimeType;
+                }
+              }
+
               console.log(
-                `[WhatsApp Inbound] De: +${from} | Tipo: ${message.type} | Mensagem: "${text}"`
+                `[WhatsApp Inbound] ID: ${messageId} | De: +${from} | Tipo: ${message.type} | Mensagem: "${text}"`
               );
 
               // Executar o motor conversacional do PetRec
@@ -151,9 +193,11 @@ export async function POST(request: Request) {
                 );
               }
 
-              // Gravar no histórico de logs do Convex para auditoria e diagnóstico em tempo real
+              // Atualizar no histórico de logs do Convex com a resposta final
               try {
                 await convex.mutation(api.whatsapp.logWebhookEvent, {
+                  logId: claimedLogId,
+                  messageId,
                   from: `+${from}`,
                   messageText: text,
                   replyText: botResult.replyText,
