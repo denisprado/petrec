@@ -17,6 +17,16 @@ async function hashPassword(email: string, password: string): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function normalizeWhatsappPhone(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return undefined;
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    return `+55${digits}`;
+  }
+  return `+${digits}`;
+}
+
 function sanitizeUser(user: any) {
   if (!user) return null;
   const { passwordHash, ...rest } = user;
@@ -77,7 +87,8 @@ export const register = mutation({
     }
 
     const passwordHash = await hashPassword(email, args.password);
-    const cleanPhone = args.whatsappPhoneNumber?.replace(/\D/g, "") || undefined;
+    const normalizedPhone = normalizeWhatsappPhone(args.whatsappPhoneNumber);
+    const now = Date.now();
 
     const existingUser = await ctx.db
       .query("users")
@@ -92,7 +103,9 @@ export const register = mutation({
       await ctx.db.patch(existingUser._id, {
         name,
         passwordHash,
-        ...(cleanPhone ? { whatsappPhoneNumber: cleanPhone } : {}),
+        ...(normalizedPhone
+          ? { whatsappPhoneNumber: normalizedPhone, whatsappVerifiedAt: now }
+          : {}),
         ...(args.avatar ? { avatar: args.avatar } : {}),
         ...(args.roleDescription ? { roleDescription: args.roleDescription } : {}),
       });
@@ -105,11 +118,12 @@ export const register = mutation({
         name,
         email,
         passwordHash,
-        whatsappPhoneNumber: cleanPhone,
+        whatsappPhoneNumber: normalizedPhone,
+        whatsappVerifiedAt: normalizedPhone ? now : undefined,
         avatar,
         roleDescription: args.roleDescription?.trim() || "Tutor(a) no PetRec",
         timezone: "America/Sao_Paulo",
-        createdAt: Date.now(),
+        createdAt: now,
       });
     }
 
@@ -166,6 +180,24 @@ export const register = mutation({
             isPrimary: roleToAssign === "owner",
           });
         }
+      }
+    }
+
+    if (normalizedPhone) {
+      const existingSession = await ctx.db
+        .query("whatsappSessions")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .first();
+      if (!existingSession) {
+        const firstMembership = await ctx.db
+          .query("petMembers")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .first();
+        await ctx.db.insert("whatsappSessions", {
+          userId,
+          currentPetId: firstMembership?.petId,
+          state: "IDLE",
+        });
       }
     }
 
@@ -252,16 +284,20 @@ export const updateProfile = mutation({
       }
     }
 
-    const cleanPhone =
+    const normalizedPhone =
       args.whatsappPhoneNumber !== undefined
-        ? args.whatsappPhoneNumber.replace(/\D/g, "") || undefined
+        ? normalizeWhatsappPhone(args.whatsappPhoneNumber)
         : user.whatsappPhoneNumber;
 
     const patchData: Record<string, any> = {
       name: args.name.trim() || user.name,
       email: nextEmail,
-      whatsappPhoneNumber: cleanPhone,
+      whatsappPhoneNumber: normalizedPhone,
     };
+
+    if (args.whatsappPhoneNumber !== undefined) {
+      patchData.whatsappVerifiedAt = normalizedPhone ? Date.now() : undefined;
+    }
 
     if (args.avatar !== undefined) {
       patchData.avatar = args.avatar.trim() || user.avatar;
@@ -277,6 +313,25 @@ export const updateProfile = mutation({
     }
 
     await ctx.db.patch(args.userId, patchData);
+
+    if (normalizedPhone) {
+      const existingSession = await ctx.db
+        .query("whatsappSessions")
+        .withIndex("by_user", (q) => q.eq("userId", args.userId))
+        .first();
+      if (!existingSession) {
+        const firstMembership = await ctx.db
+          .query("petMembers")
+          .withIndex("by_user", (q) => q.eq("userId", args.userId))
+          .first();
+        await ctx.db.insert("whatsappSessions", {
+          userId: args.userId,
+          currentPetId: firstMembership?.petId,
+          state: "IDLE",
+        });
+      }
+    }
+
     const updated = await ctx.db.get(args.userId);
     return sanitizeUser(updated);
   },

@@ -27,12 +27,6 @@ export async function GET(request: Request) {
     }
 
     if (!user) {
-      // Fallback: tentar obter pelo primeiro usuário
-      const allUsers = await convex.query(api.users.list);
-      user = allUsers[0];
-    }
-
-    if (!user) {
       return NextResponse.json({ error: "Usuário não encontrado" }, { status: 404 });
     }
 
@@ -57,13 +51,14 @@ export async function GET(request: Request) {
       });
     }
 
-    const botNumber = process.env.WHATSAPP_BOT_NUMBER || "5519999999999";
-    const waLink = `https://wa.me/${botNumber}?text=${encodeURIComponent(token)}`;
+    const botNumber = (process.env.WHATSAPP_BOT_NUMBER || "15551874911").replace(/[^\d]/g, "");
+    const waLink = `https://wa.me/${botNumber}?text=${encodeURIComponent("Oi")}`;
 
     return NextResponse.json({
       success: true,
       token,
       expiresAt,
+      botNumber,
       waLink,
       connectedPhone: user.whatsappPhoneNumber,
       isVerified: !!user.whatsappVerifiedAt,
@@ -93,18 +88,19 @@ export async function POST(request: Request) {
     }
 
     if (!user) {
-      const allUsers = await convex.query(api.users.list);
-      user = allUsers[0];
-    }
-
-    if (!user) {
       return NextResponse.json({ error: "Usuário não encontrado" }, { status: 404 });
     }
 
     // Se fornecido telefone direto para conectar:
     if (phone) {
       const digits = phone.replace(/[^\d]/g, "");
-      const cleanPhone = digits.startsWith("+") ? digits : `+${digits}`;
+      if (!digits) {
+        return NextResponse.json({ error: "Número de telefone inválido." }, { status: 400 });
+      }
+      const cleanPhone =
+        (digits.length === 10 || digits.length === 11) && !digits.startsWith("55")
+          ? `+55${digits}`
+          : `+${digits}`;
       const res = await convex.mutation(api.whatsapp.directConnect, {
         userId: user._id,
         phone: cleanPhone,
@@ -154,13 +150,11 @@ export async function DELETE(request: Request) {
     }
 
     let targetUserId: any = userId;
-    try {
-      const user = await convex.query(api.users.getById, { userId: userId as any });
-      if (user) targetUserId = user._id;
-    } catch {
-      const allUsers = await convex.query(api.users.list);
-      if (allUsers[0]) targetUserId = allUsers[0]._id;
+    const user = await convex.query(api.users.getById, { userId: userId as any });
+    if (!user) {
+      return NextResponse.json({ error: "Usuário não encontrado" }, { status: 404 });
     }
+    targetUserId = user._id;
 
     await convex.mutation(api.users.disconnectWhatsApp, {
       userId: targetUserId,

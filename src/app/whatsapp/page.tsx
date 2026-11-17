@@ -6,24 +6,16 @@ import {
   MessageCircle,
   Smartphone,
   Send,
-  Check,
-  CheckCheck,
-  ShieldCheck,
   RefreshCw,
-  Zap,
-  Info,
   ExternalLink,
-  Bot,
-  QrCode,
   AlertCircle,
   CheckCircle2,
   Trash2,
-  Copy,
   Camera,
   Mic,
+  Sparkles,
 } from "lucide-react";
 import { format } from "date-fns";
-import { ptBR } from "date-fns/locale";
 
 interface ChatMessage {
   id: string;
@@ -37,77 +29,55 @@ interface ChatMessage {
 export default function WhatsAppPage() {
   const { currentUser, activePetId, pets, triggerRefresh, refreshTrigger } = useApp();
 
+  const activePet = pets.find((p) => p.id === activePetId) || pets[0];
+  const petNameExample = activePet?.name || "Bidu";
+
   // Estados de conexão
-  const [loadingPairing, setLoadingPairing] = useState(false);
-  const [connectedPhone, setConnectedPhone] = useState<string | null>(null);
-  const [pairingToken, setPairingToken] = useState<string | null>(null);
-  const [waLink, setWaLink] = useState<string | null>(null);
-  const [phoneInput, setPhoneInput] = useState<string>("+55 19 98888-7777");
+  const [connectedPhone, setConnectedPhone] = useState<string | null>(
+    currentUser?.whatsappPhoneNumber || null
+  );
+  const [waLink, setWaLink] = useState<string>("https://wa.me/15551874911?text=Oi");
+  const [phoneInput, setPhoneInput] = useState<string>(
+    currentUser?.whatsappPhoneNumber || ""
+  );
+  const [savingPhone, setSavingPhone] = useState(false);
 
   // Estados do Chat Simulador
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "msg-welcome",
       sender: "bot",
-      text: "👋 Olá! Sou o assistente PetRec no WhatsApp.\nEnvie *0* ou *menu* para ver opções, ou digite:\n1️⃣ Hoje | 2️⃣ Estoque | 3️⃣ Remédio | 4️⃣ Alimentei | 5️⃣ Vacinas | 6️⃣ Comprei | 7️⃣ Peso | 8️⃣ Prontuário | 9️⃣ Trocar Pet",
-      time: "10:00",
+      text: "👋 Olá! Sou o assistente PetRec no WhatsApp.\nEnvie *0* ou *menu* para ver opções, ou converse naturalmente sobre seus pets (texto, áudio ou foto de receita/vacina)!",
+      time: format(new Date(), "HH:mm"),
     },
   ]);
   const [inputText, setInputText] = useState("");
   const [isSending, setIsSending] = useState(false);
-  const [currentState, setCurrentState] = useState("IDLE");
-  const [lastAction, setLastAction] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  // Estados de diagnóstico Meta Cloud API & Webhooks
-  const [diagnostics, setDiagnostics] = useState<any | null>(null);
-  const [loadingDiag, setLoadingDiag] = useState(false);
-  const [sendingTestMessage, setSendingTestMessage] = useState(false);
-  const [testSendResult, setTestSendResult] = useState<any | null>(null);
-
-  const fetchDiagnostics = async (testPhone?: string) => {
-    if (testPhone) setSendingTestMessage(true);
-    else setLoadingDiag(true);
-    try {
-      const url = testPhone
-        ? `/api/whatsapp/diagnostics?testTo=${encodeURIComponent(testPhone)}`
-        : `/api/whatsapp/diagnostics`;
-      const res = await fetch(url);
-      const data = await res.json();
-      setDiagnostics(data);
-      if (testPhone) {
-        setTestSendResult(data.testSendResult);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingDiag(false);
-      setSendingTestMessage(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchDiagnostics();
-  }, []);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
-  // Carregar status do WhatsApp do usuário logado
+  // Carregar status do WhatsApp do usuário autenticado
   useEffect(() => {
     async function checkStatus() {
       if (!currentUser.id) return;
       try {
-        const res = await fetch(`/api/whatsapp/pairing?userId=${currentUser.id}`);
+        const res = await fetch(
+          `/api/whatsapp/pairing?userId=${encodeURIComponent(currentUser.id)}`
+        );
+        if (!res.ok) return;
         const data = await res.json();
         if (data.connectedPhone) {
           setConnectedPhone(data.connectedPhone);
+          setPhoneInput(data.connectedPhone);
         } else {
           setConnectedPhone(null);
         }
-        setPairingToken(data.token);
-        setWaLink(data.waLink);
+        if (data.waLink) {
+          setWaLink(data.waLink);
+        }
       } catch (err) {
         console.error(err);
       }
@@ -115,30 +85,58 @@ export default function WhatsAppPage() {
     checkStatus();
   }, [currentUser.id, refreshTrigger]);
 
-  const handleRegenerateToken = async () => {
-    setLoadingPairing(true);
-    try {
-      const res = await fetch("/api/whatsapp/pairing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: currentUser.id }),
-      });
-      const data = await res.json();
-      setPairingToken(data.token);
-      setWaLink(data.waLink);
-      setToastMessage("Novo código de conexão gerado!");
-      setTimeout(() => setToastMessage(null), 3000);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingPairing(false);
-    }
-  };
-
   // Scroll automático no chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Salvar ou atualizar número de WhatsApp
+  const handleSavePhone = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!phoneInput.trim() || !currentUser.id) return;
+    setSavingPhone(true);
+    try {
+      const res = await fetch("/api/whatsapp/pairing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          phone: phoneInput.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setConnectedPhone(data.connectedPhone || phoneInput.trim());
+        setPhoneInput(data.connectedPhone || phoneInput.trim());
+        setToastMessage("✓ WhatsApp conectado à sua conta!");
+        setTimeout(() => setToastMessage(null), 3500);
+        triggerRefresh();
+      } else {
+        alert(data.error || "Não foi possível salvar o número.");
+      }
+    } catch (err: any) {
+      alert(`Erro: ${err.message}`);
+    } finally {
+      setSavingPhone(false);
+    }
+  };
+
+  // Desconectar WhatsApp
+  const handleDisconnect = async () => {
+    if (!confirm("Deseja realmente desconectar o WhatsApp desta conta?")) return;
+    try {
+      await fetch(`/api/whatsapp/pairing?userId=${encodeURIComponent(currentUser.id)}`, {
+        method: "DELETE",
+      });
+      setConnectedPhone(null);
+      setPhoneInput("");
+      setToastMessage("WhatsApp desconectado.");
+      setTimeout(() => setToastMessage(null), 3500);
+      triggerRefresh();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   // Enviar mensagem no simulador (texto e/ou mídia)
   const handleSendMessage = async (
@@ -175,7 +173,7 @@ export default function WhatsAppPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fromPhone: connectedPhone || phoneInput,
+          fromPhone: connectedPhone || phoneInput || currentUser.whatsappPhoneNumber || "",
           messageText: textToSend,
           userId: currentUser.id,
           mediaType: mediaOpts?.mediaType,
@@ -189,7 +187,7 @@ export default function WhatsAppPage() {
       let replyContent = data.replyText;
       if (!replyContent) {
         if (data.error) {
-          replyContent = `⚠️ Erro no servidor: ${data.error}`;
+          replyContent = `⚠️ Não foi possível processar a mensagem: ${data.error}`;
         } else {
           replyContent = "Mensagem recebida.";
         }
@@ -203,19 +201,17 @@ export default function WhatsAppPage() {
       };
 
       setMessages((prev) => [...prev, botMsg]);
-      setCurrentState(data.currentState || "IDLE");
       if (data.actionTaken) {
-        setLastAction(data.actionTaken);
-        setToastMessage(`✓ Ação sincronizada: ${data.actionTaken}`);
-        setTimeout(() => setToastMessage(null), 4000);
-        triggerRefresh(); // Atualiza dashboard e estoque em tempo real!
+        setToastMessage("✓ Informação atualizada no seu PetRec!");
+        setTimeout(() => setToastMessage(null), 3500);
+        triggerRefresh();
       }
     } catch (err: any) {
       console.error(err);
       const botMsg: ChatMessage = {
         id: `bot-${Date.now()}`,
         sender: "bot",
-        text: `⚠️ Erro ao processar mensagem: ${err.message || "Falha de conexão"}`,
+        text: `⚠️ Erro de conexão: ${err.message || "Tente novamente."}`,
         time: format(new Date(), "HH:mm"),
       };
       setMessages((prev) => [...prev, botMsg]);
@@ -250,39 +246,22 @@ export default function WhatsAppPage() {
     e.target.value = "";
   };
 
-  // Vínculo rápido de demonstração com 1 clique
-  const handleQuickConnect = async () => {
-    if (!pairingToken) return;
-    setIsSending(true);
-    try {
-      // Simula o envio da mensagem com o token de conexão
-      await handleSendMessage(pairingToken);
-      setConnectedPhone(phoneInput);
-      setToastMessage("✓ WhatsApp conectado com sucesso!");
-      setTimeout(() => setToastMessage(null), 3500);
-      triggerRefresh();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  // Desconectar WhatsApp
-  const handleDisconnect = async () => {
-    if (!confirm("Deseja realmente desconectar o WhatsApp desta conta?")) return;
-    try {
-      await fetch(`/api/whatsapp/pairing?userId=${currentUser.id}`, {
-        method: "DELETE",
-      });
-      setConnectedPhone(null);
-      setToastMessage("WhatsApp desconectado.");
-      setTimeout(() => setToastMessage(null), 3500);
-      triggerRefresh();
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  const naturalExamples =
+    pets.length === 0
+      ? [
+          "Bidu, cão, 10kg",
+          "Tenho uma gata chamada Luna 4kg",
+          "Comprei 15kg de ração",
+          "Bidu toma Sepurim 20mg e Retenic 5mg",
+        ]
+      : [
+          `O ${petNameExample} deixou metade do pote hoje cedo`,
+          "Não consegui dar o comprimido das 8h porque ele cuspiu",
+          "Comprei um saco de 15kg de ração",
+          "Pesei o balde e tem 4,2kg de ração",
+          "Anota aí que ele teve diarreia hoje",
+          "Quando a ração vai acabar?",
+        ];
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 space-y-6">
@@ -299,43 +278,44 @@ export default function WhatsAppPage() {
         <div>
           <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
             <MessageCircle className="w-6 h-6 text-emerald-600" />
-            <span>Chatbot no WhatsApp & Simulador</span>
+            <span>Assistente no WhatsApp</span>
           </h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Interaja com o PetRec em linguagem natural, registre cuidados e consulte o estoque sem abrir o app.
+            Converse naturalmente pelo celular para registrar cuidados e consultar o estoque, ou teste aqui antes de usar.
           </p>
         </div>
         <div className="text-xs bg-emerald-50 text-emerald-800 border border-emerald-200 px-3 py-1.5 rounded-xl font-bold flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span>Bot Engine Ativo</span>
+          <span>Assistente Ativo</span>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Coluna Esquerda: Conexão e Informações (5 colunas) */}
+        {/* Coluna Esquerda: Meu Número & Guia de Uso (5 colunas) */}
         <div className="lg:col-span-5 space-y-5">
-          {/* Card de Pareamento e Status do Tutor */}
+          {/* Card Meu WhatsApp Conectado */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <Smartphone className="w-5 h-5 text-emerald-600" />
-                <span>Vínculo do WhatsApp</span>
+                <span>Meu WhatsApp Conectado</span>
               </h2>
               <span className="text-xs text-slate-500">
-                Tutor: <strong>{currentUser.name.split(" ")[0]}</strong>
+                <strong>{currentUser.name.split(" ")[0]}</strong>
               </span>
             </div>
 
             {connectedPhone ? (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 space-y-2">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    <span>Conectado e Ativo</span>
+                    <span>Número Ativo para Uso</span>
                   </span>
                   <button
+                    type="button"
                     onClick={handleDisconnect}
-                    className="text-[11px] text-red-600 hover:underline flex items-center gap-1 font-bold"
+                    className="text-[11px] text-rose-600 hover:underline flex items-center gap-1 font-bold cursor-pointer"
                   >
                     <Trash2 className="w-3 h-3" />
                     <span>Desconectar</span>
@@ -344,501 +324,80 @@ export default function WhatsAppPage() {
                 <div className="text-sm font-black text-emerald-950 font-mono">
                   {connectedPhone}
                 </div>
-                <p className="text-[11px] text-emerald-800">
-                  Todas as mensagens enviadas no simulador interagirão diretamente como{" "}
+                <p className="text-[11px] text-emerald-800 leading-relaxed">
+                  Tudo o que você enviar desse número no WhatsApp será registrado diretamente na conta de{" "}
                   <strong>{currentUser.name}</strong>.
                 </p>
+                <a
+                  href={waLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition shadow-xs flex items-center justify-center gap-2"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Abrir PetRec no Meu WhatsApp</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
               </div>
             ) : (
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
                 <div className="font-bold flex items-center gap-1.5 mb-1">
                   <AlertCircle className="w-4 h-4 text-amber-600" />
-                  <span>Nenhum número conectado para {currentUser.name}</span>
+                  <span>Nenhum número conectado ainda</span>
                 </div>
                 <p className="text-[11px] text-amber-800">
-                  Insira o número desejado abaixo e clique em conectar para vincular sua conta imediatamente.
+                  Informe seu celular com DDD abaixo para falar com o PetRec direto do seu WhatsApp.
                 </p>
               </div>
             )}
 
-            {/* Formulário de alteração / conexão direta com 1 clique */}
-            <div className="space-y-3 pt-1 border-t border-slate-100">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-700 block">
-                  {connectedPhone ? "Alterar número para simulação:" : "Número do WhatsApp para teste:"}
-                </label>
+            <form onSubmit={handleSavePhone} className="space-y-2.5 pt-2 border-t border-slate-100">
+              <label className="text-xs font-bold text-slate-700 block">
+                {connectedPhone ? "Atualizar meu número de WhatsApp:" : "Seu número de WhatsApp (com DDD):"}
+              </label>
+              <div className="flex gap-2">
                 <input
-                  type="text"
+                  type="tel"
+                  required
                   value={phoneInput}
                   onChange={(e) => setPhoneInput(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 font-mono"
-                  placeholder="+55 19 98888-7777"
+                  className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono"
+                  placeholder="19999999999"
                 />
-              </div>
-
-              <div className="flex gap-2">
                 <button
-                  type="button"
-                  onClick={async () => {
-                    if (!phoneInput.trim()) return;
-                    setIsSending(true);
-                    try {
-                      const res = await fetch("/api/whatsapp/pairing", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          userId: currentUser.id,
-                          phone: phoneInput.trim(),
-                        }),
-                      });
-                      const data = await res.json();
-                      if (data.success) {
-                        setConnectedPhone(data.connectedPhone || phoneInput.trim());
-                        setToastMessage("✓ Número conectado com sucesso!");
-                        setTimeout(() => setToastMessage(null), 3500);
-                        triggerRefresh();
-                      } else {
-                        alert(data.error || "Falha ao conectar.");
-                      }
-                    } catch (err: any) {
-                      alert(`Erro: ${err.message}`);
-                    } finally {
-                      setIsSending(false);
-                    }
-                  }}
-                  disabled={isSending}
-                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  type="submit"
+                  disabled={savingPhone || !phoneInput.trim()}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs transition shadow-xs disabled:opacity-50 cursor-pointer shrink-0"
                 >
-                  <Zap className="w-4 h-4" />
-                  <span>{isSending ? "Conectando..." : connectedPhone ? "Atualizar Número" : "Conectar com 1 Clique"}</span>
+                  {savingPhone ? "Salvando..." : connectedPhone ? "Atualizar" : "Conectar"}
                 </button>
               </div>
-
-              {pairingToken && (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-500">Código de Conexão alternativo:</span>
-                    <div className="flex items-center gap-1.5">
-                      <code className="bg-slate-200 px-2 py-0.5 rounded font-black text-slate-800">
-                        {pairingToken}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={handleRegenerateToken}
-                        disabled={loadingPairing}
-                        className="p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-slate-800 transition"
-                        title="Gerar novo código"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${loadingPairing ? "animate-spin" : ""}`} />
-                      </button>
-                    </div>
-                  </div>
-                  <button
-                    onClick={handleQuickConnect}
-                    disabled={isSending}
-                    className="w-full py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg font-bold text-[11px] transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-                  >
-                    <span>Simular envio do código no chat</span>
-                  </button>
-                </div>
-              )}
-            </div>
+            </form>
           </div>
 
-          {/* Card de Configuração Meta Cloud API (WhatsApp Real) */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                <span>Meta Cloud API (WhatsApp Real)</span>
+          {/* Card Guia Rápido & Exemplos para Testar */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
+            <div className="space-y-1">
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-emerald-600" />
+                <span>O que você pode enviar no WhatsApp</span>
               </h2>
-              <span className="text-[11px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
-                Configurado ✓
-              </span>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Fale com suas próprias palavras, mande um áudio de voz ou envie a foto de uma receita veterinária ou carteira de vacinação. Clique em qualquer exemplo abaixo para testar ao lado:
+              </p>
             </div>
 
-            <div className="space-y-2.5 text-xs">
-              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
-                <div className="flex justify-between items-center text-slate-600">
-                  <span className="font-medium">Número do Bot Meta:</span>
-                  <a
-                    href="https://wa.me/15551874911"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-mono font-bold text-emerald-700 hover:underline flex items-center gap-1"
-                  >
-                    <span>+1 555-187-4911</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
-                <div className="flex justify-between items-center text-slate-600">
-                  <span className="font-medium">Phone Number ID:</span>
-                  <code className="font-mono text-slate-800 bg-slate-200 px-1.5 py-0.5 rounded text-[11px]">
-                    999314983268918
-                  </code>
-                </div>
-              </div>
-
-              {/* Endpoint Webhook */}
-              <div className="space-y-1">
-                <span className="text-[11px] font-bold text-slate-600 block">
-                  Callback URL (Webhook para colar na Meta):
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    readOnly
-                    value={
-                      typeof window !== "undefined"
-                        ? `${window.location.origin}/api/whatsapp/webhook`
-                        : "https://seu-dominio/api/whatsapp/webhook"
-                    }
-                    className="w-full px-2.5 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700 select-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url =
-                        typeof window !== "undefined"
-                          ? `${window.location.origin}/api/whatsapp/webhook`
-                          : "https://seu-dominio/api/whatsapp/webhook";
-                      navigator.clipboard.writeText(url);
-                      setToastMessage("URL do Webhook copiada!");
-                      setTimeout(() => setToastMessage(null), 3000);
-                    }}
-                    className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600 transition shrink-0 cursor-pointer"
-                    title="Copiar URL do Webhook"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Verify Token */}
-              <div className="space-y-1">
-                <span className="text-[11px] font-bold text-slate-600 block">
-                  Verify Token (Token de Verificação):
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    readOnly
-                    value="petrec_webhook_secret_token"
-                    className="w-full px-2.5 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700 select-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText("petrec_webhook_secret_token");
-                      setToastMessage("Token de verificação copiado!");
-                      setTimeout(() => setToastMessage(null), 3000);
-                    }}
-                    className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600 transition shrink-0 cursor-pointer"
-                    title="Copiar Verify Token"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Guia de 3 passos para ativar na Meta */}
-            <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-1.5 text-[11px] text-emerald-950">
-              <div className="font-bold text-emerald-900 flex items-center gap-1">
-                <Info className="w-3.5 h-3.5" />
-                <span>Como testar no seu WhatsApp real:</span>
-              </div>
-              <ol className="list-decimal list-inside space-y-1 text-emerald-900">
-                <li>
-                  No Meta Developer Console (WhatsApp &gt; Início da API), adicione seu número à <strong>Lista de permissão (Para)</strong>.
-                </li>
-                <li>
-                  Abra uma conversa com <strong>+1 555-187-4911</strong> no seu celular e envie uma mensagem inicial (ex: <code>oi</code>).
-                </li>
-                <li>
-                  Em <strong>Configuração do Webhook</strong> na Meta, salve a URL e o Verify Token e assine o campo <strong>messages</strong>.
-                </li>
-              </ol>
-            </div>
-          </div>
-
-          {/* Card de Diagnóstico em Tempo Real (Vercel & Meta) */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Zap className="w-4 h-4 text-amber-500" />
-                <span>Diagnóstico em Tempo Real (Vercel & Meta)</span>
-              </h2>
-              <button
-                type="button"
-                onClick={() => fetchDiagnostics()}
-                disabled={loadingDiag}
-                className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-800 transition cursor-pointer"
-                title="Recarregar diagnóstico"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loadingDiag ? "animate-spin" : ""}`} />
-              </button>
-            </div>
-
-            {diagnostics && (
-              <div className="space-y-3 text-xs">
-                {/* Status das Variáveis na Vercel */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
-                  <div className="font-bold text-slate-700 mb-1 flex items-center justify-between">
-                    <span>Variáveis de Ambiente no Servidor:</span>
-                    <span className="text-[10px] text-slate-400">Verificação ao Vivo</span>
-                  </div>
-
-                  <div className="flex justify-between items-center text-[11px]">
-                    <span className="text-slate-600">WHATSAPP_API_TOKEN:</span>
-                    {diagnostics.environment.hasApiToken ? (
-                      <span className="text-emerald-700 font-bold flex items-center gap-1">
-                        <Check className="w-3 h-3" /> Configurado
-                      </span>
-                    ) : (
-                      <span className="text-red-600 font-bold">❌ Ausente na Vercel</span>
-                    )}
-                  </div>
-
-                  <div className="flex justify-between items-center text-[11px]">
-                    <span className="text-slate-600">WHATSAPP_PHONE_NUMBER_ID:</span>
-                    {diagnostics.environment.hasPhoneId ? (
-                      <span className="text-emerald-700 font-bold flex items-center gap-1">
-                        <Check className="w-3 h-3" /> {diagnostics.environment.phoneId}
-                      </span>
-                    ) : (
-                      <span className="text-red-600 font-bold">❌ Ausente na Vercel</span>
-                    )}
-                  </div>
-
-                  <div className="flex justify-between items-center text-[11px]">
-                    <span className="text-slate-600">WHATSAPP_VERIFY_TOKEN:</span>
-                    <span className="text-emerald-700 font-bold flex items-center gap-1">
-                      <Check className="w-3 h-3" /> Configurado
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between items-center text-[11px] pt-1 border-t border-slate-200/70">
-                    <span className="text-slate-600">Motor IA / Linguagem Natural:</span>
-                    {diagnostics.environment.hasGeminiKey ? (
-                      <span className="text-emerald-700 font-bold flex items-center gap-1">
-                        <Check className="w-3 h-3" /> Gemini ({diagnostics.environment.aiModel})
-                      </span>
-                    ) : (
-                      <span
-                        className="text-amber-700 font-bold"
-                        title="Configure GEMINI_API_KEY na Vercel para LLM completo; o interpretador semântico local segue ativo."
-                      >
-                        NLU Contextual Local (sem GEMINI_API_KEY)
-                      </span>
-                    )}
-                  </div>
-
-                  {(!diagnostics.environment.hasApiToken || !diagnostics.environment.hasPhoneId) && (
-                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg text-red-800 text-[11px] leading-relaxed">
-                      ⚠️ <strong>Atenção:</strong> Suas credenciais não estão configuradas na Vercel!
-                      <br />
-                      Acesse <strong>vercel.com &gt; Seu Projeto &gt; Settings &gt; Environment Variables</strong> e adicione as chaves <code>WHATSAPP_API_TOKEN</code> e <code>WHATSAPP_PHONE_NUMBER_ID</code>.
-                    </div>
-                  )}
-                </div>
-
-                {/* Status da Meta Cloud API */}
-                {diagnostics.metaApiLive && (
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                    <span className="font-bold text-slate-700 block mb-0.5">
-                      Status da Meta Cloud API:
-                    </span>
-                    {diagnostics.metaApiLive.display_phone_number ? (
-                      <p className="text-[11px] text-emerald-800">
-                        ✓ Conexão com o Facebook ativa:{" "}
-                        <strong>{diagnostics.metaApiLive.display_phone_number}</strong> (Status:{" "}
-                        {diagnostics.metaApiLive.quality_rating})
-                      </p>
-                    ) : (
-                      <p className="text-[11px] text-red-700 font-mono">
-                        {JSON.stringify(diagnostics.metaApiLive.error || diagnostics.metaApiLive)}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {/* Botão de Disparo de Teste Real */}
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const target = connectedPhone || phoneInput;
-                      if (!target) {
-                        alert("Por favor, informe seu telefone no campo acima.");
-                        return;
-                      }
-                      fetchDiagnostics(target);
-                    }}
-                    disabled={sendingTestMessage || !diagnostics.environment.hasApiToken}
-                    className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>
-                      {sendingTestMessage
-                        ? "Enviando mensagem pela Meta..."
-                        : `Testar Envio Real para ${connectedPhone || phoneInput}`}
-                    </span>
-                  </button>
-
-                  {testSendResult && (
-                    <div className="mt-2 p-2.5 rounded-lg border text-[11px]">
-                      {testSendResult.messages ? (
-                        <div className="text-emerald-800 bg-emerald-50 border-emerald-200 p-2 rounded">
-                          🎉 <strong>Sucesso!</strong> A Meta despachou a mensagem de teste com ID:{" "}
-                          <code>{testSendResult.messages[0]?.id}</code>. Verifique o seu WhatsApp!
-                        </div>
-                      ) : (
-                        <div className="text-red-800 bg-red-50 border-red-200 p-2 rounded space-y-1">
-                          <strong>Erro ao enviar pela Meta:</strong>
-                          <p className="font-mono text-[10px]">
-                            {testSendResult.error?.message || JSON.stringify(testSendResult)}
-                          </p>
-                          {testSendResult.error?.code === 131030 && (
-                            <p className="text-[11px] text-red-900 font-semibold mt-1">
-                              👉 <strong>Causa identificada:</strong> Seu número de telefone ainda não foi adicionado à <em>Lista de Destinatários Permitidos</em> no Meta for Developers (WhatsApp &gt; Início da API &gt; Para).
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Histórico dos Últimos Webhooks Recebidos */}
-                <div className="pt-2 border-t border-slate-100 space-y-1.5">
-                  <div className="flex justify-between items-center text-slate-700 font-bold">
-                    <span>Últimos Webhooks Recebidos da Meta:</span>
-                    <button
-                      type="button"
-                      onClick={() => fetchDiagnostics()}
-                      className="text-[10px] text-emerald-700 hover:underline cursor-pointer"
-                    >
-                      Atualizar
-                    </button>
-                  </div>
-
-                  {diagnostics.webhookLogs && diagnostics.webhookLogs.length > 0 ? (
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                      {diagnostics.webhookLogs.map((log: any, idx: number) => (
-                        <div
-                          key={log._id || idx}
-                          className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-[11px] space-y-0.5"
-                        >
-                          <div className="flex justify-between items-center">
-                            <span className="font-mono font-bold text-slate-800">
-                              {log.from}: "{log.messageText}"
-                            </span>
-                            <span
-                              className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                                log.status === "SUCCESS"
-                                  ? "bg-emerald-100 text-emerald-800"
-                                  : "bg-red-100 text-red-800"
-                              }`}
-                            >
-                              {log.status}
-                            </span>
-                          </div>
-                          {log.metaError && (
-                            <p className="text-red-600 text-[10px] truncate" title={log.metaError}>
-                              Erro Meta: {log.metaError}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-slate-400 italic p-2 bg-slate-50 rounded-lg text-center">
-                      Nenhum webhook recebido da Meta até o momento.
-                      <br />
-                      (Verifique se o campo "messages" está assinado na Meta)
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Estado Interno da Máquina de Estados (Contexto do Bot) */}
-          <div className="bg-slate-900 text-slate-100 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-slate-300 flex items-center gap-2">
-                <Bot className="w-4 h-4 text-emerald-400" />
-                <span>Estado da Conversa (State Machine)</span>
-              </span>
-              <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 font-mono text-[10px] rounded-full">
-                {currentState}
-              </span>
-            </div>
-
-            <div className="space-y-1 text-slate-400 text-[11px]">
-              <div>
-                • Pet em Foco:{" "}
-                <strong className="text-white">
-                  {pets.find((p) => p.id === activePetId)?.name || pets[0]?.name || "Nenhum pet"}
-                </strong>
-              </div>
-              <div>• Tutor Remetente: <strong className="text-white">{currentUser.name}</strong></div>
-              <div>• Permissão RBAC: <strong className="text-white">Validada automaticamente</strong></div>
-              {lastAction && (
-                <div>• Última Ação Executada: <strong className="text-emerald-400">{lastAction}</strong></div>
-              )}
-            </div>
-          </div>
-
-          {/* Atalhos Rápidos para Testar */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3">
             <div className="space-y-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Comandos Rápidos para Testar:
+              <h3 className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">
+                Frases Naturais do Dia a Dia:
               </h3>
               <div className="flex flex-wrap gap-1.5">
-                {[
-                  { label: "0 - Menu", cmd: "0" },
-                  { label: "1 - Hoje", cmd: "1" },
-                  { label: "2 - Estoque", cmd: "2" },
-                  { label: "3 - Remédio", cmd: "3" },
-                  { label: "4 - Alimentei", cmd: "4" },
-                  { label: "5 - Vacinas", cmd: "5" },
-                  { label: "6 - Comprei", cmd: "6" },
-                  { label: "7 - Peso", cmd: "7" },
-                  { label: "8 - Prontuário", cmd: "8" },
-                  { label: "9 - Trocar Pet", cmd: "9" },
-                ].map((btn) => (
-                  <button
-                    key={btn.label}
-                    onClick={() => handleSendMessage(btn.cmd)}
-                    className="px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-800 text-slate-700 rounded-lg text-xs font-medium transition border border-slate-200 cursor-pointer"
-                  >
-                    {btn.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-slate-100">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
-                <Bot className="w-3.5 h-3.5" />
-                <span>Testar Frases Naturais (IA):</span>
-              </h3>
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  `O ${pets.find((p: any) => p.id === activePetId)?.name || pets[0]?.name || "Gengibre"} deixou metade do pote hoje cedo`,
-                  "Não consegui dar o comprimido das 8h porque ele cuspiu",
-                  "Comprei um saco de 15kg de ração",
-                  "Pesei o balde e tem 4,2kg de ração",
-                  "Anota aí que ele teve diarreia hoje à tarde",
-                  "Quando a ração vai acabar?",
-                ].map((phrase) => (
+                {naturalExamples.map((phrase) => (
                   <button
                     key={phrase}
+                    type="button"
                     onClick={() => handleSendMessage(phrase)}
-                    className="px-2.5 py-1 bg-emerald-50/70 hover:bg-emerald-100 text-emerald-900 rounded-lg text-[11px] font-medium transition border border-emerald-200 text-left cursor-pointer"
+                    className="px-2.5 py-1.5 bg-emerald-50/70 hover:bg-emerald-100 text-emerald-900 rounded-lg text-[11px] font-medium transition border border-emerald-200 text-left cursor-pointer"
                   >
                     &ldquo;{phrase}&rdquo;
                   </button>
@@ -847,20 +406,19 @@ export default function WhatsAppPage() {
             </div>
 
             <div className="space-y-2 pt-2 border-t border-slate-100">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
-                <Mic className="w-3.5 h-3.5" />
-                <span>Testar Mídia, Multi-Pet &amp; Desambiguação:</span>
+              <h3 className="text-[11px] font-bold uppercase tracking-wider text-indigo-700">
+                Áudio e Fotos de Receitas / Vacinas:
               </h3>
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
                   onClick={() =>
                     handleSendMessage(
-                      `Hoje o ${pets.find((p: any) => p.id === activePetId)?.name || pets[0]?.name || "Rex"} deixou metade do pote e comprei 10kg de ração`,
+                      `Hoje o ${petNameExample} deixou metade do pote e comprei 10kg de ração`,
                       { mediaType: "audio" }
                     )
                   }
-                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                  className="px-2.5 py-1.5 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
                 >
                   🎙️ Áudio: &ldquo;Deixou metade do pote e comprei 10kg&rdquo;
                 </button>
@@ -872,9 +430,9 @@ export default function WhatsAppPage() {
                       { mediaType: "image" }
                     )
                   }
-                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                  className="px-2.5 py-1.5 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
                 >
-                  📸 Foto Receita: Apoquel 12/12h
+                  📸 Foto de Receita: Apoquel 12/12h
                 </button>
                 <button
                   type="button"
@@ -884,36 +442,47 @@ export default function WhatsAppPage() {
                       { mediaType: "image" }
                     )
                   }
-                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
+                  className="px-2.5 py-1.5 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
                 >
-                  📸 Foto Vacina: V10 lote BIO992
+                  📸 Foto de Vacina: V10 lote BIO992
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleSendMessage(
-                      `O ${pets[0]?.name || "Rex"} comeu 200g e a ${pets[1]?.name || "Luna"} ficou em jejum`
-                    )
-                  }
-                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
-                >
-                  🐾 Multi-Pet: &ldquo;{pets[0]?.name || "Rex"} comeu 200g e {pets[1]?.name || "Luna"} jejum&rdquo;
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSendMessage("Comprei ração")}
-                  className="px-2.5 py-1 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 rounded-lg text-[11px] font-medium transition border border-indigo-200 text-left cursor-pointer"
-                >
-                  ❓ Desambiguação: &ldquo;Comprei ração&rdquo;
-                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Atalhos Numéricos do Menu:
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { label: "0 - Menu", cmd: "0" },
+                  { label: "1 - Hoje", cmd: "1" },
+                  { label: "2 - Estoque", cmd: "2" },
+                  { label: "3 - Remédio", cmd: "3" },
+                  { label: "4 - Refeição", cmd: "4" },
+                  { label: "5 - Vacinas", cmd: "5" },
+                  { label: "6 - Compras", cmd: "6" },
+                  { label: "7 - Peso", cmd: "7" },
+                  { label: "8 - Prontuário", cmd: "8" },
+                  { label: "9 - Trocar Pet", cmd: "9" },
+                ].map((btn) => (
+                  <button
+                    key={btn.label}
+                    type="button"
+                    onClick={() => handleSendMessage(btn.cmd)}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-800 text-slate-700 rounded-lg text-xs font-medium transition border border-slate-200 cursor-pointer"
+                  >
+                    {btn.label}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Coluna Direita: Simulador Visual Estilo WhatsApp (7 colunas) */}
-        <div className="lg:col-span-7 bg-[#efeae2] border border-slate-300 rounded-3xl shadow-lg flex flex-col h-[650px] overflow-hidden relative">
-          {/* Header do WhatsApp */}
+        {/* Coluna Direita: Simulador Interativo Estilo WhatsApp (7 colunas) */}
+        <div className="lg:col-span-7 bg-[#efeae2] border border-slate-300 rounded-3xl shadow-lg flex flex-col h-[640px] overflow-hidden relative">
+          {/* Header do Chat */}
           <div className="bg-[#075e54] text-white px-4 py-3 flex items-center justify-between shadow-xs">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-emerald-700 border-2 border-emerald-400 flex items-center justify-center font-bold text-white text-base">
@@ -922,34 +491,35 @@ export default function WhatsAppPage() {
               <div>
                 <div className="font-bold text-sm leading-tight">PetRec Assistente</div>
                 <div className="text-[11px] text-emerald-200">
-                  online • respondendo como {currentUser.name.split(" ")[0]}
+                  online • conta de {currentUser.name.split(" ")[0]}
                 </div>
               </div>
             </div>
 
             <button
+              type="button"
               onClick={() =>
                 setMessages([
                   {
                     id: "msg-welcome",
                     sender: "bot",
-                    text: "👋 Olá! Sou o assistente PetRec no WhatsApp.\nEnvie *menu* para ver opções ou faça uma pergunta sobre seus pets.",
+                    text: "👋 Olá! Sou o assistente PetRec no WhatsApp.\nEnvie *0* para ver o menu ou converse naturalmente sobre seus pets.",
                     time: format(new Date(), "HH:mm"),
                   },
                 ])
               }
-              className="p-1.5 hover:bg-emerald-800 rounded-lg text-emerald-200 hover:text-white transition"
-              title="Limpar histórico da conversa"
+              className="p-1.5 hover:bg-emerald-800 rounded-lg text-emerald-200 hover:text-white transition cursor-pointer"
+              title="Limpar conversa"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>
 
-          {/* Área de Mensagens (Fundo clássico do WhatsApp) */}
+          {/* Área de Mensagens */}
           <div className="flex-1 p-4 overflow-y-auto space-y-3">
             <div className="text-center my-1">
               <span className="bg-white/80 backdrop-blur-xs text-slate-500 text-[10px] px-2.5 py-1 rounded-full shadow-2xs font-medium">
-                Criptografia de ponta a ponta simulada • PetRec Bot
+                Área de Testes Interativa • Sincronizada com seu Painel PetRec
               </span>
             </div>
 
@@ -989,7 +559,6 @@ export default function WhatsAppPage() {
                     <p>{msg.text}</p>
                     <div className="flex items-center justify-end gap-1 mt-1 text-[10px] text-slate-400">
                       <span>{msg.time}</span>
-                      {isUser && <CheckCheck className="w-3.5 h-3.5 text-blue-500" />}
                     </div>
                   </div>
                 </div>
@@ -1037,10 +606,11 @@ export default function WhatsAppPage() {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-              placeholder="Digite uma mensagem ou legenda e anexe foto/áudio..."
+              placeholder="Digite sua mensagem ou anexe uma foto/áudio..."
               className="flex-1 px-4 py-2.5 bg-white text-xs border border-slate-200 rounded-full focus:outline-none focus:ring-2 focus:ring-[#075e54] shadow-2xs text-slate-900"
             />
             <button
+              type="button"
               onClick={() => handleSendMessage()}
               disabled={isSending || !inputText.trim()}
               className="w-10 h-10 rounded-full bg-[#075e54] hover:bg-[#128c7e] text-white flex items-center justify-center transition shadow-xs disabled:opacity-50 cursor-pointer"

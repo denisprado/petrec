@@ -54,6 +54,91 @@ function findAllPetsMentionedInText(text: string, pets: any[]): any[] {
   return found.sort((a, b) => a.index - b.index).map((f) => f.pet);
 }
 
+function parseFirstPetFromText(
+  text: string,
+  allowBareName: boolean
+): { name: string; species: string; weight?: number } | null {
+  const trimmed = text.trim();
+  const clean = normalizeForMatch(trimmed);
+  if (!clean || clean.includes("?")) return null;
+
+  const greetingsOrMenu = new Set([
+    "0",
+    "oi",
+    "ola",
+    "menu",
+    "ajuda",
+    "start",
+    "bom dia",
+    "boa tarde",
+    "boa noite",
+    "cancelar",
+    "sair",
+  ]);
+  if (greetingsOrMenu.has(clean)) return null;
+
+  const hasExplicitTrigger =
+    /\b(?:chamad[oa]|se\s+chama|cadastr|novo\s+pet|adicion|tenho\s+um|meu\s+(?:pet|cao|cachorro|gat[oa])|cachorr[oa]|cao|cadela|gat[oa]|felin[oa]|ave|passar[oa]|roedor)\b/.test(
+      clean
+    );
+
+  if (!hasExplicitTrigger && !allowBareName) {
+    return null;
+  }
+
+  const weightMatch = trimmed.match(/(\d+(?:[.,]\d+)?)\s*kg\b/i);
+  const weight = weightMatch ? parseFloat(weightMatch[1].replace(",", ".")) : undefined;
+
+  let species = "Cão";
+  if (/\b(?:gata?|felin[oa])\b/.test(clean)) {
+    species = "Gato";
+  } else if (/\b(?:ave|passar[oa]|calopsita|papagaio|periquito)\b/.test(clean)) {
+    species = "Ave";
+  } else if (/\b(?:coelho|hamster|roedor|porquinho)\b/.test(clean)) {
+    species = "Roedor";
+  }
+
+  let extractedName = "";
+  const calledMatch = trimmed.match(
+    /(?:chamad[oa]|se\s+chama)\s+([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,25}?)(?=\s*(?:,|\.|de\s+\d|\d+\s*kg|\be\b|\bcom\b|$))/i
+  );
+  const explicitCmdMatch = trimmed.match(
+    /(?:cadastr(?:ar|e)|adicion(?:ar|e)|novo)\s+(?:o\s+|a\s+)?pet\s*:?\s*([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,25}?)(?=\s*(?:,|\.|c[ãa]o|cachorr[oa]|gat[oa]|ave|roedor|\d+\s*kg|$))/i
+  );
+
+  if (calledMatch?.[1]?.trim()) {
+    extractedName = calledMatch[1].trim();
+  } else if (explicitCmdMatch?.[1]?.trim()) {
+    extractedName = explicitCmdMatch[1].trim();
+  } else {
+    let residual = trimmed;
+    if (weightMatch) {
+      residual = residual.replace(weightMatch[0], " ");
+    }
+    residual = residual
+      .replace(
+        /\b(?:tenho|um|uma|meu|minha|ele|ela|se\s+chama|chamad[oa]|cadastr(?:ar|e)|adicion(?:ar|e)|novo|de|com|peso|pesa|pesando|e|pet|cachorr[oa]|c[ãa]o|cadel[ao]|gat[oa]|felin[oa]|ave|p[áa]ssaro|calopsita|roedor|coelho|hamster)\b/gi,
+        " "
+      )
+      .replace(/[,:;.-]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    extractedName = residual;
+  }
+
+  extractedName = extractedName.replace(/^[,:.\s-]+|[,:.\s-]+$/g, "").trim();
+  if (!extractedName || extractedName.length < 2 || /^\d+$/.test(extractedName)) {
+    return null;
+  }
+
+  const finalName = extractedName.charAt(0).toUpperCase() + extractedName.slice(1);
+  return {
+    name: finalName,
+    species,
+    weight: weight && !isNaN(weight) && weight > 0 && weight < 200 ? weight : undefined,
+  };
+}
+
 async function syncPetRoutineSafe(pet: any): Promise<void> {
   try {
     const tasks: Promise<any>[] = [
@@ -218,14 +303,92 @@ export async function processWhatsAppMessage(
   let currentPet = previousPet;
 
   if (!currentPet) {
+    const normalizedFirstMsg = normalizeForMatch(text);
+    if (
+      currentState === "WAITING_FIRST_PET" &&
+      (normalizedFirstMsg === "cancelar" || normalizedFirstMsg === "sair")
+    ) {
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId: user._id,
+        state: "IDLE",
+      });
+      return {
+        success: true,
+        userFound: true,
+        senderPhone: cleanPhone,
+        userName: user.name,
+        replyText:
+          "Tudo bem! Quando quiser cadastrar seu primeiro pet, é só enviar o nome dele por aqui (ex: *\"Bidu, cão, 10kg\"*) ou acessar o painel web do PetRec.",
+        currentState: "IDLE",
+      };
+    }
+
+    const parsedFirstPet = !mediaType
+      ? parseFirstPetFromText(text, currentState === "WAITING_FIRST_PET")
+      : null;
+
+    if (parsedFirstPet) {
+      const speciesLower = parsedFirstPet.species.toLowerCase();
+      const defaultPhoto = speciesLower.includes("gato")
+        ? "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=500&auto=format&fit=crop&q=80"
+        : speciesLower.includes("ave")
+        ? "https://images.unsplash.com/photo-1522858547137-f1dcec554f55?w=500&auto=format&fit=crop&q=80"
+        : "https://images.unsplash.com/photo-1552053831-71594a27632d?w=500&auto=format&fit=crop&q=80";
+
+      const createdPet = await convex.mutation(api.pets.create, {
+        userId: user._id,
+        name: parsedFirstPet.name,
+        species: parsedFirstPet.species,
+        weight: parsedFirstPet.weight,
+        photo: defaultPhoto,
+        routineMode: "automatic_by_exception",
+      });
+
+      if (createdPet?._id) {
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId: user._id,
+          currentPetId: createdPet._id,
+          state: "IDLE",
+        });
+      }
+
+      return {
+        success: true,
+        userFound: true,
+        senderPhone: cleanPhone,
+        userName: user.name,
+        replyText:
+          `🎉 *Pet Cadastrado com Sucesso!*\n\n` +
+          `🐾 *${parsedFirstPet.name}* (${parsedFirstPet.species}${
+            parsedFirstPet.weight ? ` • ${parsedFirstPet.weight} kg` : ""
+          }) já está ativo no seu PetRec!\n\n` +
+          `🤖 *O que você já pode fazer por aqui agora:*\n` +
+          `• _"Comprei 15kg de ração"_\n` +
+          `• _"${parsedFirstPet.name} come 250g por dia"_\n` +
+          `• _"${parsedFirstPet.name} toma Apoquel 5,4mg"_\n` +
+          `• _"Anota que ${parsedFirstPet.name} tomou vacina V10"_\n` +
+          `• Ou envie *0* para abrir o menu completo!`,
+        actionTaken: "first_pet_created",
+        currentState: "IDLE",
+      };
+    }
+
+    await convex.mutation(api.whatsapp.updateSession, {
+      userId: user._id,
+      state: "WAITING_FIRST_PET",
+    });
+
+    const firstName = (user.name || "Tutor").split(" ")[0];
     return {
       success: true,
       userFound: true,
       senderPhone: cleanPhone,
       userName: user.name,
       replyText:
-        "🐾 Você ainda não possui nenhum pet cadastrado. Cadastre seu pet no aplicativo PetRec para começar!",
-      currentState: "IDLE",
+        `👋 Olá, *${firstName}*! Seu WhatsApp já está conectado ao *PetRec*!\n\n` +
+        `🐾 Notei que você ainda não cadastrou nenhum pet. Você pode cadastrar agora mesmo por aqui!\n\n` +
+        `👉 *Qual é o nome do seu pet?* (Ex.: envie *"Bidu, cão, 10kg"*, *"Gata Luna 4kg"* ou apenas o nome dele).`,
+      currentState: "WAITING_FIRST_PET",
     };
   }
 

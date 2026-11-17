@@ -181,7 +181,11 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
 
       syncUsers(data.users || [], data.user, true);
       triggerRefresh();
-      setSuccessMsg(`Conta de ${data.user.name} criada e conectada!`);
+      setSuccessMsg(
+        data.user?.whatsappPhoneNumber
+          ? `Conta criada! Seu WhatsApp (${data.user.whatsappPhoneNumber}) já está ativo no PetRec.`
+          : `Conta de ${data.user.name} criada e conectada!`
+      );
       setTimeout(() => {
         onClose();
       }, 700);
@@ -491,7 +495,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-700 block mb-1">
-                    WhatsApp (opcional)
+                    WhatsApp com DDD
                   </label>
                   <div className="relative">
                     <Phone className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
@@ -499,10 +503,13 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                       type="tel"
                       value={regPhone}
                       onChange={(e) => setRegPhone(e.target.value)}
-                      placeholder="5519999999999"
+                      placeholder="19999999999"
                       className="w-full pl-8 pr-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                     />
                   </div>
+                  <p className="text-[10px] text-emerald-700 mt-1 leading-tight">
+                    Já fica ativo ao criar a conta para você usar o assistente no celular.
+                  </p>
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-700 block mb-1">
