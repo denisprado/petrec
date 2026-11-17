@@ -137,46 +137,77 @@ export function LandingPage() {
               </div>
             )}
 
-            {/* Destaques rápidos */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs text-slate-300">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Cadastro rápido em 30s</span>
+            {/* Destaques rápidos com retratos pet */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-2">
+              <div className="flex -space-x-2.5 shrink-0">
+                <img
+                  src="https://images.unsplash.com/photo-1552053831-71594a27632d?w=160&auto=format&fit=crop&q=80"
+                  alt="Cão feliz"
+                  className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-900"
+                />
+                <img
+                  src="https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=160&auto=format&fit=crop&q=80"
+                  alt="Gato"
+                  className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-900"
+                />
+                <img
+                  src="https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?w=160&auto=format&fit=crop&q=80"
+                  alt="Bulldog"
+                  className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-900"
+                />
               </div>
-              <div className="flex items-center gap-2">
-                <Mic className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Entende áudios e fotos</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Multi-pet e multi-tutor</span>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs text-slate-300 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Cadastro em 30s</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Mic className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Áudios e fotos</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Multi-pet e família</span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Coluna Direita: Mockup Visual Realista do Fluxo WhatsApp + Estoque */}
-          <div className="lg:col-span-5">
-            <div className="bg-slate-800/90 border border-slate-700/80 rounded-3xl p-4 sm:p-5 shadow-2xl space-y-3.5 backdrop-blur-xs">
-              <div className="flex items-center justify-between border-b border-slate-700 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center font-black">
-                    <MessageCircle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-white">
-                      Assistente PetRec no WhatsApp
+          {/* Coluna Direita: Foto Hero + Mockup Visual Realista do Fluxo WhatsApp */}
+          <div className="lg:col-span-5 space-y-3">
+            <div className="bg-slate-800/90 border border-slate-700/80 rounded-3xl overflow-hidden shadow-2xl backdrop-blur-xs">
+              {/* Banner fotográfico pet */}
+              <div className="relative h-36 sm:h-40 w-full overflow-hidden">
+                <img
+                  src="https://images.unsplash.com/photo-1450778869180-41d0601e046e?w=900&auto=format&fit=crop&q=80"
+                  alt="Cão e gato descansando juntos"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/35 to-transparent" />
+                <div className="absolute bottom-2.5 left-4 right-4 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center font-black shadow-md">
+                      <MessageCircle className="w-4 h-4" />
                     </div>
-                    <div className="text-[11px] text-emerald-400 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      <span>IA conectada ao estoque e rotina</span>
+                    <div>
+                      <div className="text-xs font-bold text-white leading-tight">
+                        Assistente PetRec no WhatsApp
+                      </div>
+                      <div className="text-[10px] text-emerald-300 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>IA conectada ao estoque e rotina</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 bg-slate-900/70 px-2.5 py-1 rounded-full">
-                  <Camera className="w-3 h-3 text-emerald-400" />
-                  <Mic className="w-3 h-3 text-emerald-400" />
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-200 bg-slate-900/80 px-2.5 py-1 rounded-full border border-white/10">
+                    <Camera className="w-3 h-3 text-emerald-400" />
+                    <Mic className="w-3 h-3 text-emerald-400" />
+                  </div>
                 </div>
               </div>
+
+              <div className="p-4 sm:p-5 space-y-3.5">
 
               {/* Balões de exemplo */}
               <div className="space-y-2.5 text-xs">
@@ -231,6 +262,7 @@ export function LandingPage() {
                   Estoque OK
                 </span>
               </div>
+              </div>
             </div>
           </div>
         </div>
@@ -278,6 +310,104 @@ export function LandingPage() {
               </div>
             );
           })}
+        </div>
+      </section>
+
+      {/* Galeria Visual: Vida Real com Seus Pets */}
+      <section className="max-w-6xl mx-auto px-4 pb-12 sm:pb-16 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+          <div>
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-700">
+              Feito para a vida real
+            </span>
+            <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+              Do comedouro à consulta veterinária, tudo conectado
+            </h2>
+          </div>
+          {!isAuthenticated && (
+            <button
+              type="button"
+              onClick={() => openAuthModal("register")}
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-800 inline-flex items-center gap-1 cursor-pointer"
+            >
+              <span>Criar conta gratuita</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="group bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs hover:shadow-md transition">
+            <div className="h-44 overflow-hidden">
+              <img
+                src="https://images.unsplash.com/photo-1450778869180-41d0601e046e?w=800&auto=format&fit=crop&q=80"
+                alt="Cão e gato juntos"
+                className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+              />
+            </div>
+            <div className="p-4 space-y-1">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                Cães & Gatos em Família
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Gerencie vários pets na mesma conta com troca rápida de foco no painel e no WhatsApp.
+              </p>
+            </div>
+          </div>
+
+          <div className="group bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs hover:shadow-md transition">
+            <div className="h-44 overflow-hidden">
+              <img
+                src="https://images.unsplash.com/photo-1714068691210-073dc52c6c1d?w=800&auto=format&fit=crop&q=80"
+                alt="Cachorro se alimentando no pote de ração"
+                className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+              />
+            </div>
+            <div className="p-4 space-y-1">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                Hora da Refeição Controlada
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Previsão exata de término do saco de ração com ajuste instantâneo por sobra ou pesagem.
+              </p>
+            </div>
+          </div>
+
+          <div className="group bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs hover:shadow-md transition">
+            <div className="h-44 overflow-hidden">
+              <img
+                src="https://images.unsplash.com/photo-1628009368231-7bb7cfcb0def?w=800&auto=format&fit=crop&q=80"
+                alt="Veterinário cuidando de cachorro"
+                className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+              />
+            </div>
+            <div className="p-4 space-y-1">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                Saúde, Vacinas & Vet
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Receitas médicas, vacinas com próximo reforço, evolução de peso e notas clínicas sempre à mão.
+              </p>
+            </div>
+          </div>
+
+          <div className="group bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs hover:shadow-md transition">
+            <div className="h-44 overflow-hidden">
+              <img
+                src="https://images.unsplash.com/photo-1548199973-03cce0bbc87b?w=800&auto=format&fit=crop&q=80"
+                alt="Cães passeando ao ar livre"
+                className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+              />
+            </div>
+            <div className="p-4 space-y-1">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                Cuidadores & Pet Sitters
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Compartilhe rotinas com familiares ou cuidadores com papéis definidos e histórico auditável.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 

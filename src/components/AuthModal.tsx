@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useApp, AuthModalTab } from "@/context/AppContext";
+import { uploadProfileImage } from "@/lib/imageUpload";
 import {
   X,
   LogIn,
@@ -16,6 +17,8 @@ import {
   LogOut,
   CheckCircle2,
   AlertCircle,
+  Camera,
+  Loader2,
 } from "lucide-react";
 
 const AVATAR_PRESETS = [
@@ -51,6 +54,8 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
   const [regPassword, setRegPassword] = useState("");
   const [regPhone, setRegPhone] = useState("");
   const [regRoleDesc, setRegRoleDesc] = useState("Tutor(a) Familiar");
+  const [regAvatar, setRegAvatar] = useState(AVATAR_PRESETS[0]);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   // Profile fields
   const [profName, setProfName] = useState("");
@@ -79,10 +84,37 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
       setProfAvatar(currentUser?.avatar || AVATAR_PRESETS[0]);
       setProfRoleDesc(currentUser?.roleDescription || "Tutor(a) no PetRec");
       setProfNewPassword("");
+      setUploadingPhoto(false);
     }
   }, [isOpen, initialTab, currentUser]);
 
   if (!isOpen || !mounted) return null;
+
+  const handleAvatarFileUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    target: "register" | "profile"
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setUploadingPhoto(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const uploadedUrl = await uploadProfileImage(file);
+      if (target === "register") {
+        setRegAvatar(uploadedUrl);
+      } else {
+        setProfAvatar(uploadedUrl);
+      }
+      setSuccessMsg("Foto carregada com sucesso!");
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Erro ao processar a foto selecionada.");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,6 +168,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
           email: regEmail,
           password: regPassword,
           whatsappPhoneNumber: regPhone || undefined,
+          avatar: regAvatar || undefined,
           roleDescription: regRoleDesc,
         }),
       });
@@ -359,6 +392,55 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
 
           {activeTab === "register" && (
             <form onSubmit={handleRegister} className="space-y-3">
+              {/* Foto de Perfil (Upload ou Avatar) */}
+              <div className="flex items-center gap-3 p-2.5 rounded-2xl bg-slate-50 border border-slate-200">
+                <img
+                  src={regAvatar || AVATAR_PRESETS[0]}
+                  alt="Foto de perfil"
+                  className="w-14 h-14 rounded-full object-cover ring-2 ring-emerald-500/40 shrink-0"
+                />
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-300 rounded-xl text-[11px] font-bold transition cursor-pointer ${
+                        uploadingPhoto ? "opacity-60 pointer-events-none" : ""
+                      }`}
+                    >
+                      {uploadingPhoto ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                      ) : (
+                        <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                      )}
+                      <span>{uploadingPhoto ? "Enviando..." : "Enviar Sua Foto"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="sr-only"
+                        disabled={uploadingPhoto}
+                        onChange={(e) => handleAvatarFileUpload(e, "register")}
+                      />
+                    </label>
+                    <span className="text-[10px] text-slate-400">ou escolha um avatar:</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {AVATAR_PRESETS.map((url) => (
+                      <button
+                        key={url}
+                        type="button"
+                        onClick={() => setRegAvatar(url)}
+                        className={`rounded-full p-0.5 border-2 transition ${
+                          regAvatar === url
+                            ? "border-emerald-600 scale-105"
+                            : "border-transparent opacity-70 hover:opacity-100"
+                        }`}
+                      >
+                        <img src={url} alt="Avatar" className="w-6 h-6 rounded-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label className="text-xs font-bold text-slate-700 block mb-1">
                   Nome Completo *
@@ -438,7 +520,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
 
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || uploadingPhoto}
                 className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
               >
                 <UserPlus className="w-4 h-4" />
@@ -453,9 +535,9 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                 <img
                   src={profAvatar || AVATAR_PRESETS[0]}
                   alt={profName}
-                  className="w-12 h-12 rounded-full object-cover ring-2 ring-emerald-500/30 shrink-0"
+                  className="w-14 h-14 rounded-full object-cover ring-2 ring-emerald-500/30 shrink-0"
                 />
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-bold text-slate-900 truncate">
                     {currentUser.name}
                   </div>
@@ -467,6 +549,27 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                         : "Perfil selecionado no dispositivo"}
                     </span>
                   </div>
+                  <label
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                      uploadingPhoto ? "opacity-60 pointer-events-none" : ""
+                    }`}
+                  >
+                    {uploadingPhoto ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                    ) : (
+                      <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                    )}
+                    <span>
+                      {uploadingPhoto ? "Enviando foto..." : "Enviar Foto do Dispositivo"}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="sr-only"
+                      disabled={uploadingPhoto}
+                      onChange={(e) => handleAvatarFileUpload(e, "profile")}
+                    />
+                  </label>
                 </div>
               </div>
 
@@ -574,7 +677,7 @@ export function AuthModal({ isOpen, initialTab = "login", onClose }: AuthModalPr
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || uploadingPhoto}
                   className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition shadow-sm"
                 >
                   {loading ? "Salvando..." : "Salvar Perfil"}

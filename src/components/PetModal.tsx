@@ -6,6 +6,7 @@ import { useApp } from "@/context/AppContext";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { Id } from "../../convex/_generated/dataModel";
+import { uploadProfileImage } from "@/lib/imageUpload";
 import {
   X,
   PawPrint,
@@ -14,6 +15,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 
 
@@ -75,6 +77,7 @@ export function PetModal({
   const [routineMode, setRoutineMode] = useState("automatic_by_exception");
 
   const [loading, setLoading] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -109,8 +112,26 @@ export function PetModal({
       setRoutineMode("automatic_by_exception");
     }
     setErrorMsg(null);
+    setUploadingPhoto(false);
     setShowDeleteConfirm(false);
   }, [initialData, mode, isOpen]);
+
+  const handlePetPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setUploadingPhoto(true);
+    setErrorMsg(null);
+    try {
+      const uploadedUrl = await uploadProfileImage(file);
+      setPhoto(uploadedUrl);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Erro ao enviar a foto do pet.");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   const createPetMutation = useMutation(api.pets.create);
   const updatePetMutation = useMutation(api.pets.update);
@@ -342,24 +363,46 @@ export function PetModal({
             </div>
           </div>
 
-          {/* Foto (Presets ou URL personalizada) */}
+          {/* Foto (Upload do Dispositivo, Presets ou URL) */}
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-700 block">
               Foto do Pet
             </label>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <img
                 src={
                   photo ||
                   "https://images.unsplash.com/photo-1552053831-71594a27632d?w=150"
                 }
                 alt="Preview"
-                className="w-14 h-14 rounded-2xl object-cover border-2 border-emerald-500 shadow-xs shrink-0"
+                className="w-16 h-16 rounded-2xl object-cover border-2 border-emerald-500 shadow-xs shrink-0"
               />
-              <div className="flex-1 space-y-1.5">
+              <div className="flex-1 space-y-2 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      uploadingPhoto ? "opacity-60 pointer-events-none" : ""
+                    }`}
+                  >
+                    {uploadingPhoto ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                    ) : (
+                      <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                    )}
+                    <span>{uploadingPhoto ? "Enviando foto..." : "Enviar Foto do Pet"}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="sr-only"
+                      disabled={uploadingPhoto}
+                      onChange={handlePetPhotoUpload}
+                    />
+                  </label>
+                  <span className="text-[11px] text-slate-400">do computador ou celular</span>
+                </div>
                 <input
-                  type="url"
-                  placeholder="Cole a URL da foto (ou escolha abaixo)"
+                  type="text"
+                  placeholder="Ou cole a URL da foto / selecione abaixo"
                   value={photo}
                   onChange={(e) => setPhoto(e.target.value)}
                   className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
@@ -523,7 +566,7 @@ export function PetModal({
               </button>
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || uploadingPhoto}
                 className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs transition disabled:opacity-50"
               >
                 {loading
