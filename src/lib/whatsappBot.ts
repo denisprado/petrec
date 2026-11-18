@@ -1348,14 +1348,38 @@ export async function processWhatsAppMessage(
     });
     let reply = `📋 *Prontuário & Histórico Clínico — ${currentPet.name}:*\n\n`;
 
-    if (!health?.clinicalNotes || health.clinicalNotes.length === 0) {
-      reply += "Nenhum apontamento veterinário registrado até o momento.";
+    const notes = [...(health?.clinicalNotes || [])].sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt || b._creationTime || 0).getTime() -
+        new Date(a.createdAt || a._creationTime || 0).getTime()
+    );
+
+    if (notes.length === 0) {
+      reply += "Nenhum apontamento veterinário registrado até o momento.\n";
     } else {
-      for (const n of health.clinicalNotes.slice(0, 3)) {
+      for (const n of notes.slice(0, 5)) {
         const authorName = (n as any).author?.name || "Tutor/Vet";
-        reply += `• *Nota por ${authorName}*:\n  ${(n as any).content || ""}\n`;
+        const ts = (n as any).createdAt || (n as any)._creationTime;
+        let dateLabel = "";
+        if (ts) {
+          try {
+            dateLabel = ` (${new Intl.DateTimeFormat("pt-BR", {
+              timeZone: "America/Sao_Paulo",
+              day: "2-digit",
+              month: "2-digit",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            }).format(new Date(ts))})`;
+          } catch {
+            dateLabel = "";
+          }
+        }
+        reply += `• *${authorName}*${dateLabel}:\n  ${(n as any).content || ""}\n`;
       }
     }
+
+    reply += `\n💡 _Para adicionar uma nova nota clínica, envie: "Anote: [sua observação]" ou relate o sintoma diretamente!_`;
 
     return {
       success: true,

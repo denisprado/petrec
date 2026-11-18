@@ -1962,6 +1962,38 @@ async function interpretWithContextualNlu(
   return interpretSingleClauseNlu(messageText, snapshot, convex, userId);
 }
 
+function parseExplicitClinicalNote(
+  messageText: string,
+  petNames: string[] = []
+): string | null {
+  const trimmed = messageText.trim();
+  if (!trimmed) return null;
+
+  const prefixRegex =
+    /^(?:anot[aei](?:r)?(?:\s+a[ií])?(?:\s+no\s+prontu[aá]rio)?(?:\s+que)?|nota(?:\s+cl[ií]nica)?|observa[çc][ãa]o|obs|prontu[aá]rio|registr[ae](?:r)?\s+no\s+prontu[aá]rio|adicione?\s+(?:uma\s+)?nota(?:\s+cl[ií]nica)?|nova\s+nota(?:\s+cl[ií]nica)?)\s*(?:[:,-]\s*|\s+que\s+|\s+)([\s\S]+)$/i;
+
+  const directMatch = trimmed.match(prefixRegex);
+  if (directMatch?.[1]?.trim()) {
+    return directMatch[1].trim();
+  }
+
+  for (const pet of petNames) {
+    if (!pet?.trim()) continue;
+    const escaped = escapeRegex(pet.trim());
+    const afterPetMatch = trimmed.match(
+      new RegExp(`^(?:o|a|para\\s+o|para\\s+a|pro|pra)?\\s*${escaped}\\s*[,:-]?\\s+([\\s\\S]+)$`, "i")
+    );
+    if (afterPetMatch?.[1]) {
+      const innerMatch = afterPetMatch[1].trim().match(prefixRegex);
+      if (innerMatch?.[1]?.trim()) {
+        return innerMatch[1].trim();
+      }
+    }
+  }
+
+  return null;
+}
+
 async function interpretSingleClauseNlu(
   messageText: string,
   snapshot: PetContextSnapshot,
@@ -1969,6 +2001,34 @@ async function interpretSingleClauseNlu(
   userId: any
 ): Promise<AiAssistantResult> {
   const clean = normalizeText(messageText);
+  const petNamesList = snapshot.allPets.map((p: any) => p.name);
+
+  // 0. Nota clínica explícita ("Anote: ...", "Observação: ...", "Prontuário: ...")
+  const explicitNoteContent = parseExplicitClinicalNote(messageText, petNamesList);
+  const isExplicitVaccineNote =
+    !clean.startsWith("anote") &&
+    !clean.startsWith("nota") &&
+    !clean.startsWith("obs") &&
+    !clean.startsWith("prontuario") &&
+    Boolean(parseVaccineFromText(messageText));
+
+  if (explicitNoteContent && !isExplicitVaccineNote) {
+    const exec = await executeAssistantToolCall({
+      convex,
+      toolName: "record_clinical_note",
+      args: { content: explicitNoteContent },
+      snapshot,
+      userId,
+    });
+
+    return {
+      handled: true,
+      replyText: exec.replyText,
+      actionTaken: exec.actionTaken,
+      nextState: "IDLE",
+      usedGemini: false,
+    };
+  }
 
   // 1. Perguntas de consulta rápida (Q&A)
   if (
@@ -2092,7 +2152,6 @@ async function interpretSingleClauseNlu(
   }
 
   // 1e. Receita / Uso contínuo / Novos Medicamentos (suporta 1 ou múltiplos medicamentos na mesma frase)
-  const petNamesList = snapshot.allPets.map((p: any) => p.name);
   const medCreations = parseMedicationsFromText(messageText, petNamesList);
   if (medCreations.length > 0) {
     const replies: string[] = [];
@@ -2452,26 +2511,82 @@ async function interpretSingleClauseNlu(
     }
   }
 
-  // 6. Nota clínica / diário de sintomas
-  const isClinicalNote =
-    clean.startsWith("anota") ||
-    clean.startsWith("registra no prontuario") ||
-    clean.includes("diarreia") ||
-    clean.includes("cocando") ||
-    clean.includes("coceira") ||
-    clean.includes("orelha") ||
-    clean.includes("mancando") ||
-    clean.includes("vomitou") ||
-    clean.includes("vomito") ||
-    clean.includes("apatia") ||
-    clean.includes("apatico") ||
-    clean.includes("tosse") ||
-    clean.includes("espirr");
+  // 6. Nota clínica / diário de sintomas e observações livres
+  const clinicalKeywordPatterns = [
+    /\bincontinencia\b/,
+    /\burinari[ao]s?\b/,
+    /\burina(?:r|ndo|da)?\b/,
+    /\bxixi\b/,
+    /\bfezes\b/,
+    /\bsangue\b/,
+    /\bferid[ao]s?\b/,
+    /\bmachucad[ao]s?\b/,
+    /\bles(?:ao|oes)\b/,
+    /\bcaroc[ao]s?\b/,
+    /\bnodul[ao]s?\b/,
+    /\balergi(?:a|as|c[ao]s?)\b/,
+    /\bdermatite\b/,
+    /\botite\b/,
+    /\binfecc(?:ao|oes)\b/,
+    /\binflamac(?:ao|oes)\b/,
+    /\bdor(?:es)?\b/,
+    /\bfebre\b/,
+    /\bconvuls(?:ao|oes)\b/,
+    /\btrem(?:or|ores|endo)\b/,
+    /\bcansac[oa]\b/,
+    /\bcansad[ao]\b/,
+    /falta\s+de\s+ar/,
+    /\bengasg/,
+    /\bsecrec(?:ao|oes)\b/,
+    /\bremela\b/,
+    /\bolhos?\b/,
+    /\bpele\b/,
+    /queda\s+de\s+pelo/,
+    /\bdentes?\b/,
+    /\bgengiva\b/,
+    /\bestomago\b/,
+    /\bintestino\b/,
+    /\bconstipa/,
+    /\bdiarreia\b/,
+    /\bcocando\b/,
+    /\bcoceira\b/,
+    /\borelha\b/,
+    /\bmancando\b/,
+    /\bvomit(?:ou|o|ando|os)?\b/,
+    /\bapati(?:a|c[ao])\b/,
+    /\btoss(?:e|indo)\b/,
+    /\bespirr/,
+    /\bmelhor(?:a|ou|ando)?\b/,
+    /\bpior(?:a|ou|ando)?\b/,
+    /\breac(?:ao|oes)\b/,
+    /efeito\s+colateral/,
+    /\bsintomas?\b/,
+    /\bobservac(?:ao|oes)\b/,
+    /\binchad[ao]s?\b/,
+    /\binchaco\b/,
+    /\bvermelhid/,
+    /\blambendo\b/,
+    /\bchorando\b/,
+    /\bgemendo\b/,
+    /\bintoxic/,
+  ];
 
-  if (isClinicalNote) {
-    const cleanedContent = messageText
-      .replace(/^(?:anota\s+(?:a[ií]\s+)?(?:que\s+)?|nota\s*:\s*)/i, "")
-      .trim();
+  const hasClinicalDescriptor =
+    /\b(?:esta\s+com|ta\s+com|teve|apresentou|apareceu\s+com|diagnosticad[oa]\s+com|suspeita\s+de|em\s+observacao|testando\s+.+\b(?:medicamento|remedio|tratamento|melhora))\b/.test(
+      clean
+    );
+
+  const isClinicalNote =
+    Boolean(explicitNoteContent) ||
+    clinicalKeywordPatterns.some((rx) => rx.test(clean)) ||
+    hasClinicalDescriptor;
+
+  if (isClinicalNote && !clean.includes("?")) {
+    const cleanedContent =
+      explicitNoteContent ||
+      messageText
+        .replace(/^(?:anot[ae]\s+(?:a[ií]\s+)?(?:que\s+)?|nota\s*:\s*)/i, "")
+        .trim();
 
     const exec = await executeAssistantToolCall({
       convex,
@@ -2586,13 +2701,17 @@ export async function processNaturalLanguageWithAI(params: {
         ];
       }
 
-      const interaction = await client.interactions.create({
+      const interactionPromise = client.interactions.create({
         model: AI_MODEL_NAME,
         system_instruction: buildSystemInstruction(snapshot),
         input: interactionInput,
         tools: ASSISTANT_TOOLS,
         store: false,
       });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Gemini interactions timeout (5500ms)")), 5500)
+      );
+      const interaction = await Promise.race([interactionPromise, timeoutPromise]);
 
       const functionCalls = (interaction.steps || []).filter(
         (step): step is Extract<typeof step, { type: "function_call" }> =>

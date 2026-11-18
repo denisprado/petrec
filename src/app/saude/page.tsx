@@ -634,9 +634,13 @@ export default function SaudePage() {
                           )}
                         </div>
                         <div className="text-[10px] text-slate-500">
-                          {format(new Date(note.createdAt), "dd 'de' MMMM 'às' HH:mm", {
-                            locale: ptBR,
-                          })}
+                          {format(
+                            new Date(note.createdAt || note._creationTime || Date.now()),
+                            "dd 'de' MMMM 'às' HH:mm",
+                            {
+                              locale: ptBR,
+                            }
+                          )}
                         </div>
                       </div>
                     </div>

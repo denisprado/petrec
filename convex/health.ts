@@ -29,6 +29,7 @@ export const getPetHealth = query({
         return {
           ...n,
           id: n._id,
+          createdAt: new Date(n._creationTime).toISOString(),
           author,
         };
       })
@@ -78,6 +79,7 @@ export const listClinicalNotes = query({
         return {
           ...n,
           id: n._id,
+          createdAt: new Date(n._creationTime).toISOString(),
           author,
         };
       })
