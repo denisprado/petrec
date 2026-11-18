@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../../convex/_generated/api";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -63,6 +64,15 @@ export async function POST(request: Request) {
       visibility: visibility || "ALL_TUTORS",
       appointmentId: appointmentId || undefined,
     });
+
+    if ((visibility || "ALL_TUTORS") !== "PROFESSIONALS_ONLY") {
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(petId),
+        actorUserId: String(authorId),
+        summary: `📋 *Nova Nota Clínica no Prontuário:*\n"${content.trim()}"`,
+      });
+    }
 
     return NextResponse.json({ success: true, noteId });
   } catch (error: any) {

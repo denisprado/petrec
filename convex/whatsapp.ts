@@ -315,4 +315,61 @@ export const listWebhookLogs = query({
   },
 });
 
+export const getPetNotificationRecipients = query({
+  args: {
+    petId: v.id("pets"),
+    excludeUserId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const pet = await ctx.db.get(args.petId);
+    const actor = args.excludeUserId ? await ctx.db.get(args.excludeUserId) : null;
+
+    const memberships = await ctx.db
+      .query("petMembers")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+
+    const now = Date.now();
+    const seenPhones = new Set<string>();
+    const recipients: Array<{
+      userId: typeof memberships[number]["userId"];
+      memberId: typeof memberships[number]["_id"];
+      name: string;
+      phone: string;
+      role: string;
+    }> = [];
+
+    for (const m of memberships) {
+      if (args.excludeUserId && m.userId === args.excludeUserId) continue;
+      if (m.notifyWhatsApp === false) continue;
+      if (m.accessExpiresAt) {
+        const expMs = new Date(m.accessExpiresAt).getTime();
+        if (!isNaN(expMs) && expMs < now) continue;
+      }
+
+      const user = await ctx.db.get(m.userId);
+      const phone = user?.whatsappPhoneNumber?.trim();
+      if (!user || !phone) continue;
+
+      const phoneKey = phone.replace(/\D/g, "");
+      if (!phoneKey || seenPhones.has(phoneKey)) continue;
+      seenPhones.add(phoneKey);
+
+      recipients.push({
+        userId: user._id,
+        memberId: m._id,
+        name: user.name,
+        phone,
+        role: m.role,
+      });
+    }
+
+    return {
+      petName: pet?.name || "Pet",
+      actorName: actor?.name || "Um tutor",
+      recipients,
+    };
+  },
+});
+
 

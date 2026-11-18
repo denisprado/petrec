@@ -24,6 +24,8 @@ import {
   KeyRound,
   MessageCircle,
   Share2,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import { format, differenceInCalendarDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -212,6 +214,34 @@ export default function TutoresPage() {
         triggerRefresh();
       } else {
         alert(json.error || "Erro ao revogar acesso");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleToggleNotifications = async (memberId: string, currentlyEnabled: boolean) => {
+    try {
+      const nextValue = !currentlyEnabled;
+      const res = await fetch("/api/tutores", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memberId, notifyWhatsApp: nextValue }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setMembers((prev) =>
+          prev.map((m) => (m.id === memberId ? { ...m, notifyWhatsApp: nextValue } : m))
+        );
+        setFeedback(
+          nextValue
+            ? "🔔 Alertas no WhatsApp ativados para este membro!"
+            : "🔕 Alertas no WhatsApp silenciados para este membro."
+        );
+        setTimeout(() => setFeedback(null), 3500);
+        triggerRefresh();
+      } else {
+        alert(json.error || "Erro ao alterar preferência de notificação.");
       }
     } catch (err) {
       console.error(err);
@@ -658,8 +688,8 @@ export default function TutoresPage() {
                   </div>
 
                   {/* Permissões & Status de Acesso */}
-                  <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200">
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 pt-1 border-t border-slate-200">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
                         <CheckCircle2 className="w-3.5 h-3.5" />
                         <span>Prescrição médica</span>
@@ -674,16 +704,54 @@ export default function TutoresPage() {
                       )}
                     </div>
 
-                    {permissions.canManageMembers && (
-                      <button
-                        onClick={() => handleRemoveMember(member.id, member.user.name)}
-                        className="text-rose-600 hover:text-rose-800 text-[11px] font-bold flex items-center gap-1 p-1 hover:bg-rose-50 rounded"
-                        title="Revogar Acesso"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Revogar</span>
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {member.user?.whatsappPhoneNumber ? (
+                        <button
+                          type="button"
+                          disabled={!(member.user.id === currentUser.id || permissions.canManageMembers)}
+                          onClick={() =>
+                            handleToggleNotifications(member.id, member.notifyWhatsApp !== false)
+                          }
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold transition ${
+                            member.notifyWhatsApp !== false
+                              ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
+                              : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                          } ${
+                            member.user.id === currentUser.id || permissions.canManageMembers
+                              ? "cursor-pointer"
+                              : "opacity-75 cursor-default"
+                          }`}
+                          title="Alternar notificações de atividades pelo WhatsApp"
+                        >
+                          {member.notifyWhatsApp !== false ? (
+                            <>
+                              <Bell className="w-3 h-3 text-emerald-600" />
+                              <span>Alertas WhatsApp: Ativos</span>
+                            </>
+                          ) : (
+                            <>
+                              <BellOff className="w-3 h-3 text-slate-500" />
+                              <span>Alertas WhatsApp: Silenciados</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 border border-slate-200 text-[10px] font-medium">
+                          Sem WhatsApp cadastrado
+                        </span>
+                      )}
+
+                      {permissions.canManageMembers && (
+                        <button
+                          onClick={() => handleRemoveMember(member.id, member.user.name)}
+                          className="text-rose-600 hover:text-rose-800 text-[11px] font-bold flex items-center gap-1 p-1 hover:bg-rose-50 rounded"
+                          title="Revogar Acesso"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Revogar</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -737,7 +805,43 @@ export default function TutoresPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 self-end sm:self-center">
+                <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
+                  {member.user?.whatsappPhoneNumber ? (
+                    <button
+                      type="button"
+                      disabled={!(isSelf || permissions.canManageMembers)}
+                      onClick={() =>
+                        handleToggleNotifications(member.id, member.notifyWhatsApp !== false)
+                      }
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold transition ${
+                        member.notifyWhatsApp !== false
+                          ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
+                          : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                      } ${
+                        isSelf || permissions.canManageMembers
+                          ? "cursor-pointer"
+                          : "opacity-75 cursor-default"
+                      }`}
+                      title="Ativar ou silenciar notificações pelo WhatsApp quando outro tutor registrar algo"
+                    >
+                      {member.notifyWhatsApp !== false ? (
+                        <>
+                          <Bell className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Alertas WhatsApp: Ativos</span>
+                        </>
+                      ) : (
+                        <>
+                          <BellOff className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Alertas WhatsApp: Silenciados</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-400 border border-slate-200 text-[11px] font-medium">
+                      Sem WhatsApp cadastrado
+                    </span>
+                  )}
+
                   <span
                     className={`text-xs font-bold px-3 py-1 rounded-full border ${roleInfo.color}`}
                   >

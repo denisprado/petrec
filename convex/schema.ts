@@ -42,6 +42,7 @@ export default defineSchema({
     accessExpiresAt: v.optional(v.string()),
     canPrescribe: v.optional(v.boolean()),
     clinicName: v.optional(v.string()),
+    notifyWhatsApp: v.optional(v.boolean()),
   })
     .index("by_pet", ["petId"])
     .index("by_user", ["userId"])

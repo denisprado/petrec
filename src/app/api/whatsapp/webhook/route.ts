@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../../convex/_generated/api";
 import { processWhatsAppMessage } from "@/lib/whatsappBot";
+import { sendMetaWhatsAppMessage } from "@/lib/whatsappNotifier";
 
 export const maxDuration = 60;
 
@@ -147,6 +148,9 @@ export async function POST(request: Request) {
                 `[WhatsApp Inbound] ID: ${messageId} | De: +${from} | Tipo: ${message.type} | Mensagem: "${text}"`
               );
 
+              const incomingPhoneId =
+                value?.metadata?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID;
+
               // Executar o motor conversacional do PetRec
               const botResult = await processWhatsAppMessage({
                 fromPhone: from,
@@ -154,6 +158,7 @@ export async function POST(request: Request) {
                 mediaType,
                 mediaBase64,
                 mediaMimeType,
+                metaPhoneNumberId: incomingPhoneId,
               });
 
               console.log(
@@ -161,8 +166,7 @@ export async function POST(request: Request) {
               );
 
               // Despachar a resposta de volta ao WhatsApp do usuário via Meta Cloud API
-              const phoneId =
-                value?.metadata?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID;
+              const phoneId = incomingPhoneId;
 
               console.log(
                 `[WhatsApp Outbound] Usando Phone ID: ${phoneId} (metadata: ${value?.metadata?.phone_number_id}, env: ${process.env.WHATSAPP_PHONE_NUMBER_ID})`
@@ -224,125 +228,6 @@ export async function POST(request: Request) {
       { status: "ERROR_PROCESSED", error: error.message },
       { status: 200 }
     );
-  }
-}
-
-function formatWhatsAppRecipient(phone: string): string {
-  const clean = phone.replace(/\D/g, "");
-  // Se for celular do Brasil (DDI 55) com DDD e apenas 8 dígitos (total 12 dígitos), insere o 9º dígito:
-  if (clean.startsWith("55") && clean.length === 12) {
-    const ddd = clean.slice(2, 4);
-    const rest = clean.slice(4);
-    return `55${ddd}9${rest}`;
-  }
-  return clean;
-}
-
-async function sendMetaWhatsAppMessage(params: {
-  to: string;
-  text: string;
-  apiToken: string;
-  phoneId: string;
-}): Promise<{ success: boolean; error?: any }> {
-  const url = `https://graph.facebook.com/v21.0/${params.phoneId}/messages`;
-
-  // Normaliza o número (adiciona 9 se for celular brasileiro de 12 dígitos)
-  let targetTo = formatWhatsAppRecipient(params.to);
-
-  async function postMessage(recipient: string) {
-    return await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.apiToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: recipient,
-        type: "text",
-        text: {
-          preview_url: false,
-          body: params.text,
-        },
-      }),
-    });
-  }
-
-  try {
-    let res = await postMessage(targetTo);
-    let resData = await res.json().catch(() => ({}));
-
-    // Fallback: Se a Meta rejeitar por erro 131030 (não permitido), tenta a versão alternativa (com ou sem o 9)
-    if (!res.ok && resData?.error?.code === 131030) {
-      const alternateTo =
-        targetTo.length === 13 && targetTo.startsWith("55")
-          ? `55${targetTo.slice(2, 4)}${targetTo.slice(5)}` // sem o 9
-          : formatWhatsAppRecipient(targetTo); // com o 9
-
-      if (alternateTo !== targetTo) {
-        console.log(
-          `[WhatsApp Webhook] Tentando envio para formato alternativo: +${alternateTo}...`
-        );
-        const retryRes = await postMessage(alternateTo);
-        const retryData = await retryRes.json().catch(() => ({}));
-
-        if (retryRes.ok) {
-          console.log(
-            `[Meta API Send Success] Mensagem enviada com sucesso no formato alternativo para ${alternateTo}`
-          );
-          return { success: true };
-        }
-        resData = retryData;
-      }
-    }
-
-    // Fallback: Se a Meta rejeitar por erro 131037 (nome de exibição não aprovado no novo número), tenta pelo número pré-aprovado
-    if (!res.ok && resData?.error?.code === 131037) {
-      const fallbackPhoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-      if (fallbackPhoneId && fallbackPhoneId !== params.phoneId) {
-        console.log(
-          `[WhatsApp Webhook] Erro 131037 (display name pendente em ${params.phoneId}). Tentando fallback pelo número pré-aprovado ${fallbackPhoneId}...`
-        );
-        const fallbackUrl = `https://graph.facebook.com/v21.0/${fallbackPhoneId}/messages`;
-        const retryRes = await fetch(fallbackUrl, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${params.apiToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            recipient_type: "individual",
-            to: targetTo,
-            type: "text",
-            text: {
-              preview_url: false,
-              body: params.text,
-            },
-          }),
-        });
-        const retryData = await retryRes.json().catch(() => ({}));
-        if (retryRes.ok) {
-          console.log(
-            `[Meta API Send Success] Mensagem enviada via fallback pré-aprovado (${fallbackPhoneId}) para ${targetTo}`
-          );
-          return { success: true };
-        }
-        resData = retryData;
-      }
-    }
-
-    if (!res.ok) {
-      console.error("[Meta API Send Error]:", JSON.stringify(resData, null, 2));
-      return { success: false, error: resData };
-    } else {
-      console.log(`[Meta API Send Success] Mensagem enviada para ${targetTo}`);
-      return { success: true };
-    }
-  } catch (err: any) {
-    console.error("[Meta API Network Error]:", err);
-    return { success: false, error: err.message };
   }
 }
 

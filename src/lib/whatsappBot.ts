@@ -6,6 +6,24 @@ import {
   PendingItemCandidate,
   processNaturalLanguageWithAI,
 } from "./whatsappAiAssistant";
+import { notifyPetMembersOnWhatsApp } from "./whatsappNotifier";
+
+const NOTIFY_ACTIONS = new Set([
+  "feeding_exception_recorded",
+  "consumption_recorded",
+  "medication_skipped",
+  "medication_administered",
+  "medication_created",
+  "medication_updated",
+  "purchase_recorded",
+  "stock_adjusted",
+  "weight_recorded",
+  "clinical_note_recorded",
+  "vaccine_recorded",
+  "inventory_item_created",
+  "daily_consumption_updated",
+  "joined_pet_by_code",
+]);
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -166,6 +184,7 @@ export interface ProcessWhatsAppParams {
   mediaType?: "audio" | "image";
   mediaBase64?: string;
   mediaMimeType?: string;
+  metaPhoneNumberId?: string;
 }
 
 export interface ProcessWhatsAppResult {
@@ -176,6 +195,13 @@ export interface ProcessWhatsAppResult {
   userName?: string;
   actionTaken?: string;
   currentState: string;
+  notifiedRecipients?: Array<{ name: string; phone: string }>;
+}
+
+interface NotificationTracker {
+  actorUserId?: string;
+  activePetId?: string;
+  multiNotifications?: Array<{ petId: string; summary: string }>;
 }
 
 /**
@@ -184,6 +210,64 @@ export interface ProcessWhatsAppResult {
  */
 export async function processWhatsAppMessage(
   params: ProcessWhatsAppParams
+): Promise<ProcessWhatsAppResult> {
+  const tracker: NotificationTracker = {};
+  const result = await executeWhatsAppMessage(params, tracker);
+
+  const actions = (result.actionTaken || "")
+    .split(",")
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const shouldNotify = actions.some((a) => NOTIFY_ACTIONS.has(a));
+
+  if (!shouldNotify) {
+    return result;
+  }
+
+  const targets: Array<{ petId: string; summary: string }> =
+    tracker.multiNotifications && tracker.multiNotifications.length > 0
+      ? tracker.multiNotifications
+      : tracker.activePetId
+      ? [{ petId: tracker.activePetId, summary: result.replyText }]
+      : [];
+
+  if (targets.length === 0) {
+    return result;
+  }
+
+  const uniqueRecipientsMap = new Map<string, { name: string; phone: string }>();
+  for (const target of targets) {
+    const cleanSummary = target.summary
+      .replace(/^🔄\s*_\(Pet em foco alternado para[^)]+\)_\s*/i, "")
+      .trim();
+
+    const notified = await notifyPetMembersOnWhatsApp({
+      convex,
+      petId: target.petId,
+      actorUserId: tracker.actorUserId,
+      summary: cleanSummary,
+      phoneIdOverride: params.metaPhoneNumberId,
+    });
+
+    for (const r of notified.recipients) {
+      uniqueRecipientsMap.set(r.phone.replace(/\D/g, ""), r);
+    }
+  }
+
+  const recipients = Array.from(uniqueRecipientsMap.values());
+  if (recipients.length > 0) {
+    result.notifiedRecipients = recipients;
+    result.replyText += `\n\n📣 _Notificação enviada no WhatsApp para: ${recipients
+      .map((r) => r.name.split(" ")[0])
+      .join(", ")}_`;
+  }
+
+  return result;
+}
+
+async function executeWhatsAppMessage(
+  params: ProcessWhatsAppParams,
+  tracker: NotificationTracker
 ): Promise<ProcessWhatsAppResult> {
   const { fromPhone, messageText, userId, mediaType, mediaBase64, mediaMimeType } = params;
 
@@ -292,6 +376,7 @@ export async function processWhatsAppMessage(
 
   const user = context.user;
   const pets = context.pets || [];
+  tracker.actorUserId = String(user._id);
 
   const currentSession = context.session;
   const currentState = currentSession?.state || "IDLE";
@@ -313,6 +398,8 @@ export async function processWhatsAppMessage(
           userId: user._id,
           code: codeCandidate,
         });
+
+        tracker.activePetId = String(joined.pet.id);
 
         await convex.mutation(api.whatsapp.updateSession, {
           userId: user._id,
@@ -449,6 +536,7 @@ export async function processWhatsAppMessage(
     };
   }
 
+  tracker.activePetId = String(currentPet._id);
   const lower = text.toLowerCase();
   const normalizedCmd = normalizeForMatch(text);
   const mentionedPets = text ? findAllPetsMentionedInText(text, pets) : [];
@@ -472,6 +560,7 @@ export async function processWhatsAppMessage(
     if (clauses.length >= 2) {
       const replies: string[] = [];
       const actions: string[] = [];
+      const multiNotifs: Array<{ petId: string; summary: string }> = [];
       let lastHandledPet = currentPet;
       let nextState = "IDLE";
       let pendingPayload: string | undefined;
@@ -491,7 +580,19 @@ export async function processWhatsAppMessage(
 
         if (aiClauseRes.handled) {
           replies.push(aiClauseRes.replyText);
-          if (aiClauseRes.actionTaken) actions.push(aiClauseRes.actionTaken);
+          if (aiClauseRes.actionTaken) {
+            actions.push(aiClauseRes.actionTaken);
+            const clauseActs = aiClauseRes.actionTaken
+              .split(",")
+              .map((a) => a.trim())
+              .filter(Boolean);
+            if (clauseActs.some((a) => NOTIFY_ACTIONS.has(a))) {
+              multiNotifs.push({
+                petId: String(clausePet._id),
+                summary: aiClauseRes.replyText,
+              });
+            }
+          }
           if (aiClauseRes.nextState !== "IDLE" && aiClauseRes.pendingActionPayload) {
             nextState = aiClauseRes.nextState;
             pendingPayload = aiClauseRes.pendingActionPayload;
@@ -500,6 +601,8 @@ export async function processWhatsAppMessage(
       }
 
       if (replies.length > 0) {
+        tracker.multiNotifications = multiNotifs;
+        tracker.activePetId = String(lastHandledPet._id);
         await convex.mutation(api.whatsapp.updateSession, {
           userId: user._id,
           currentPetId: lastHandledPet._id,
@@ -527,6 +630,7 @@ export async function processWhatsAppMessage(
     mentionedPets[0]._id !== currentPet._id
   ) {
     currentPet = mentionedPets[0];
+    tracker.activePetId = String(currentPet._id);
     await convex.mutation(api.whatsapp.updateSession, {
       userId: user._id,
       currentPetId: currentPet._id,

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
 import { calculateStockForecast } from "@/lib/stockCalculation";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -83,6 +84,21 @@ export async function POST(request: Request) {
         reason: reason || notes || "Exceção de alimentação",
         userId: userId ? (userId as any) : undefined,
       });
+
+      const targetPetId = item?.petId || petId;
+      if (targetPetId) {
+        await notifyPetMembersOnWhatsApp({
+          convex,
+          petId: String(targetPetId),
+          actorUserId: userId ? String(userId) : undefined,
+          summary: `🥣 *Exceção de Alimentação:* ${item?.name || "Ração"} (${Number(
+            quantityNotConsumed || quantity || 0
+          )} ${item?.unit || "g"} preservados — ${
+            reason || notes || "Exceção de alimentação"
+          })`,
+        });
+      }
+
       return NextResponse.json({
         success: true,
         item,
@@ -125,6 +141,15 @@ export async function POST(request: Request) {
         userId: userId ? (userId as any) : undefined,
       });
 
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(petId),
+        actorUserId: userId ? String(userId) : undefined,
+        summary: `📦 *Novo Item no Estoque:* ${name.trim()} (${Number(
+          currentQuantity || 0
+        )} ${unit.trim()})`,
+      });
+
       return NextResponse.json({
         success: true,
         itemId: newItemId,
@@ -150,6 +175,22 @@ export async function POST(request: Request) {
     });
 
     const updatedItem = result.item;
+    if (updatedItem?.petId) {
+      const actionLabel =
+        type === "purchase"
+          ? "Compra / Entrada no Estoque"
+          : type === "consumption"
+          ? "Consumo / Refeição Registrada"
+          : "Ajuste de Estoque";
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(updatedItem.petId),
+        actorUserId: userId ? String(userId) : undefined,
+        summary: `📦 *${actionLabel}:* ${updatedItem.name} (${Number(quantity)} ${
+          updatedItem.unit
+        } | Saldo atual: *${updatedItem.currentQuantity} ${updatedItem.unit}*)`,
+      });
+    }
     const forecast = updatedItem
       ? calculateStockForecast({
           currentQuantity: updatedItem.currentQuantity,

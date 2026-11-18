@@ -752,6 +752,23 @@ export const inviteOrAddMember = mutation({
   },
 });
 
+export const toggleMemberWhatsAppNotifications = mutation({
+  args: {
+    memberId: v.id("petMembers"),
+    notifyWhatsApp: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const member = await ctx.db.get(args.memberId);
+    if (!member) {
+      throw new Error("Vínculo de membro não encontrado.");
+    }
+    await ctx.db.patch(args.memberId, {
+      notifyWhatsApp: args.notifyWhatsApp,
+    });
+    return { success: true, notifyWhatsApp: args.notifyWhatsApp };
+  },
+});
+
 export const removeMemberOrInvite = mutation({
   args: {
     petId: v.optional(v.id("pets")),

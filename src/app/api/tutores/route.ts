@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -81,6 +82,15 @@ export async function POST(request: Request) {
         preferredRole: preferredRole ? String(preferredRole) : undefined,
       });
 
+      if (joined.pet?.id) {
+        await notifyPetMembersOnWhatsApp({
+          convex,
+          petId: String(joined.pet.id),
+          actorUserId: String(userId),
+          summary: `🤝 *Novo Tutor Vinculado:* passou a acompanhar este pet junto com você!`,
+        });
+      }
+
       return NextResponse.json({
         success: true,
         ...joined,
@@ -144,6 +154,33 @@ export async function POST(request: Request) {
     console.error("POST /api/tutores error:", error);
     return NextResponse.json(
       { error: extractCleanError(error, "Erro ao vincular tutor.") },
+      { status: 400 }
+    );
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const body = await request.json();
+    const { memberId, notifyWhatsApp } = body || {};
+
+    if (!memberId || typeof notifyWhatsApp !== "boolean") {
+      return NextResponse.json(
+        { error: "Informe memberId e notifyWhatsApp (boolean)." },
+        { status: 400 }
+      );
+    }
+
+    const result = await convex.mutation(api.users.toggleMemberWhatsAppNotifications, {
+      memberId: memberId as any,
+      notifyWhatsApp,
+    });
+
+    return NextResponse.json(result);
+  } catch (error: any) {
+    console.error("PATCH /api/tutores error:", error);
+    return NextResponse.json(
+      { error: extractCleanError(error, "Erro ao atualizar preferências de notificação.") },
       { status: 400 }
     );
   }

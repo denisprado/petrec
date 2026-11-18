@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -61,6 +62,13 @@ export async function POST(request: Request) {
         date: data.date || undefined,
       });
 
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(petId),
+        actorUserId: userId ? String(userId) : undefined,
+        summary: `⚖️ *Novo Peso Registrado:* ${Number(data.weight)} kg`,
+      });
+
       return NextResponse.json({ success: true, recordId });
     }
 
@@ -77,6 +85,15 @@ export async function POST(request: Request) {
         notes: data.notes || undefined,
       });
 
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(petId),
+        actorUserId: userId ? String(userId) : undefined,
+        summary: `📅 *Compromisso Agendado:* ${data.title} em ${data.date} às ${
+          data.time || "10:00"
+        }`,
+      });
+
       return NextResponse.json({ success: true, appointmentId: apptId });
     }
 
@@ -91,6 +108,13 @@ export async function POST(request: Request) {
         crmv: data.crmv || undefined,
         batch: data.batch || undefined,
         notes: data.notes || undefined,
+      });
+
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(petId),
+        actorUserId: userId ? String(userId) : undefined,
+        summary: `💉 *Vacina Registrada:* ${data.name} (aplicada em ${data.applicationDate})`,
       });
 
       return NextResponse.json({ success: true, vaccineId: vaccId });

@@ -482,6 +482,15 @@ export const administer = mutation({
         });
       }
     }
+
+    const med = await ctx.db.get(adm.medicationId);
+    return {
+      success: true,
+      petId: adm.petId,
+      medicationName: med?.name || "Medicamento",
+      status: args.status,
+      quantity: adm.quantity,
+    };
   },
 });
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -82,6 +83,15 @@ export async function POST(request: Request) {
       purchaseLeadTimeDays: Number(purchaseLeadTimeDays) || 5,
       status: "active",
       notes: notes || undefined,
+    });
+
+    await notifyPetMembersOnWhatsApp({
+      convex,
+      petId: String(petId),
+      actorUserId: String(userId),
+      summary: `💊 *Novo Medicamento Cadastrado:* ${name.trim()}${
+        dosage ? ` (${dosage})` : ""
+      } — horários: ${parsedTimes.join(", ")}`,
     });
 
     return NextResponse.json({
@@ -190,12 +200,23 @@ export async function PATCH(request: Request) {
       );
     }
 
-    await convex.mutation(api.medications.administer, {
+    const result = await convex.mutation(api.medications.administer, {
       administrationId: administrationId as any,
       userId: userId ? (userId as any) : undefined,
       status,
       notes: notes || undefined,
     });
+
+    if (result?.petId) {
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(result.petId),
+        actorUserId: userId ? String(userId) : undefined,
+        summary: `💊 *Dose ${
+          status === "skipped" ? "Pulada / Não Administrada" : "Administrada"
+        }:* ${result.medicationName || "Medicamento"}${notes ? ` (${notes})` : ""}`,
+      });
+    }
 
     return NextResponse.json({
       success: true,
