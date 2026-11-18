@@ -1,6 +1,54 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 
+export function computeInventoryStatus(
+  currentQuantity: number,
+  dailyConsumption: number,
+  purchaseLeadTimeDays = 5
+): {
+  status: string;
+  daysRemaining: number | null;
+  estimatedEndDate?: string;
+} {
+  if (currentQuantity <= 0) {
+    return {
+      status: "SEM ESTOQUE",
+      daysRemaining: 0,
+      estimatedEndDate: new Date().toISOString(),
+    };
+  }
+
+  if (!dailyConsumption || dailyConsumption <= 0) {
+    return {
+      status: "OK",
+      daysRemaining: null,
+      estimatedEndDate: undefined,
+    };
+  }
+
+  const daysRemaining = Math.max(0, currentQuantity / dailyConsumption);
+  const leadTime = purchaseLeadTimeDays || 5;
+  const estimatedEndDate = new Date(
+    Date.now() + Math.floor(daysRemaining) * 86400000
+  ).toISOString();
+  const daysUntilIdealPurchase = Math.floor(daysRemaining) - leadTime;
+
+  let status = "OK";
+  if (daysRemaining < leadTime) {
+    status = "ESTOQUE INSUFICIENTE";
+  } else if (daysUntilIdealPurchase <= 0) {
+    status = "COMPRAR AGORA";
+  } else if (daysUntilIdealPurchase <= 5) {
+    status = "ATENÇÃO";
+  }
+
+  return {
+    status,
+    daysRemaining,
+    estimatedEndDate,
+  };
+}
+
 export const listByPet = query({
   args: { petId: v.id("pets") },
   handler: async (ctx, args) => {
@@ -249,9 +297,21 @@ export const recordTransaction = mutation({
       notes: args.notes,
     });
 
-    const patch: any = { currentQuantity: newQuantity };
-    if (args.status) patch.status = args.status;
-    if (args.estimatedEndDate) patch.estimatedEndDate = args.estimatedEndDate;
+    const computed = computeInventoryStatus(
+      newQuantity,
+      item.dailyConsumption,
+      item.purchaseLeadTimeDays
+    );
+
+    const patch: any = {
+      currentQuantity: newQuantity,
+      status: args.status || computed.status,
+      estimatedEndDate: args.estimatedEndDate || computed.estimatedEndDate,
+    };
+    if (patch.status === "OK") {
+      patch.lastLowStockAlertDate = undefined;
+      patch.lastLowStockAlertStatus = undefined;
+    }
 
     await ctx.db.patch(args.inventoryItemId, patch);
 
@@ -548,7 +608,16 @@ export const recordConsumption = mutation({
     if (!item) throw new Error("Item de estoque não encontrado");
 
     const newQty = Math.max(0, item.currentQuantity - args.quantity);
-    await ctx.db.patch(args.inventoryItemId, { currentQuantity: newQty });
+    const computed = computeInventoryStatus(
+      newQty,
+      item.dailyConsumption,
+      item.purchaseLeadTimeDays
+    );
+    await ctx.db.patch(args.inventoryItemId, {
+      currentQuantity: newQty,
+      status: computed.status,
+      estimatedEndDate: computed.estimatedEndDate,
+    });
 
     await ctx.db.insert("inventoryTransactions", {
       inventoryItemId: args.inventoryItemId,
@@ -582,7 +651,19 @@ export const recordPurchase = mutation({
     if (!item) throw new Error("Item de estoque não encontrado");
 
     const newQty = item.currentQuantity + args.quantity;
-    await ctx.db.patch(args.inventoryItemId, { currentQuantity: newQty });
+    const computed = computeInventoryStatus(
+      newQty,
+      item.dailyConsumption,
+      item.purchaseLeadTimeDays
+    );
+    await ctx.db.patch(args.inventoryItemId, {
+      currentQuantity: newQty,
+      status: computed.status,
+      estimatedEndDate: computed.estimatedEndDate,
+      ...(computed.status === "OK"
+        ? { lastLowStockAlertDate: undefined, lastLowStockAlertStatus: undefined }
+        : {}),
+    });
 
     await ctx.db.insert("inventoryTransactions", {
       inventoryItemId: args.inventoryItemId,
@@ -615,7 +696,19 @@ export const recordFeedingException = mutation({
     if (!item) throw new Error("Item de estoque não encontrado");
 
     const newQty = item.currentQuantity + args.quantityNotConsumed;
-    await ctx.db.patch(args.inventoryItemId, { currentQuantity: newQty });
+    const computed = computeInventoryStatus(
+      newQty,
+      item.dailyConsumption,
+      item.purchaseLeadTimeDays
+    );
+    await ctx.db.patch(args.inventoryItemId, {
+      currentQuantity: newQty,
+      status: computed.status,
+      estimatedEndDate: computed.estimatedEndDate,
+      ...(computed.status === "OK"
+        ? { lastLowStockAlertDate: undefined, lastLowStockAlertStatus: undefined }
+        : {}),
+    });
 
     const now = new Date().toISOString();
     await ctx.db.insert("inventoryTransactions", {
@@ -679,9 +772,16 @@ export const syncRoutineConsumption = mutation({
       if (elapsedDays >= 1) {
         const consumed = elapsedDays * item.dailyConsumption;
         const newQty = Math.max(0, item.currentQuantity - consumed);
+        const computed = computeInventoryStatus(
+          newQty,
+          item.dailyConsumption,
+          item.purchaseLeadTimeDays
+        );
 
         await ctx.db.patch(item._id, {
           currentQuantity: newQty,
+          status: computed.status,
+          estimatedEndDate: computed.estimatedEndDate,
           lastRoutineSyncDate: now.toISOString(),
         });
 
@@ -698,5 +798,116 @@ export const syncRoutineConsumption = mutation({
     }
 
     return { synced: true, deductionsCount: totalDeductions };
+  },
+});
+
+const LOW_STOCK_SEVERITY: Record<string, number> = {
+  OK: 0,
+  "ATENÇÃO": 1,
+  "COMPRAR AGORA": 2,
+  "ESTOQUE INSUFICIENTE": 3,
+  "SEM ESTOQUE": 4,
+};
+
+export const checkAndMarkLowStockAlerts = mutation({
+  args: { petId: v.id("pets") },
+  handler: async (ctx, args) => {
+    const items = await ctx.db
+      .query("inventoryItems")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+
+    const shoppingItems = await ctx.db
+      .query("shoppingListItems")
+      .withIndex("by_pet", (q) => q.eq("petId", args.petId))
+      .collect();
+
+    const todayDateStr = new Date().toISOString().split("T")[0];
+    const alertedItems: Array<{
+      id: typeof items[number]["_id"];
+      name: string;
+      category: string;
+      currentQuantity: number;
+      unit: string;
+      dailyConsumption: number;
+      daysRemaining: number | null;
+      status: string;
+    }> = [];
+    const allLowStockItems: typeof alertedItems = [];
+
+    for (const item of items) {
+      const computed = computeInventoryStatus(
+        item.currentQuantity,
+        item.dailyConsumption,
+        item.purchaseLeadTimeDays
+      );
+
+      const patchData: Record<string, any> = {};
+      if (item.status !== computed.status) {
+        patchData.status = computed.status;
+      }
+      if (
+        computed.estimatedEndDate &&
+        item.estimatedEndDate !== computed.estimatedEndDate
+      ) {
+        patchData.estimatedEndDate = computed.estimatedEndDate;
+      }
+
+      if (computed.status !== "OK") {
+        // Garante inclusão automática na lista de compras pendente
+        const alreadyPending = shoppingItems.some(
+          (s) => !s.isPurchased && s.inventoryItemId === item._id
+        );
+        if (!alreadyPending) {
+          await ctx.db.insert("shoppingListItems", {
+            petId: args.petId,
+            inventoryItemId: item._id,
+            customName: item.name,
+            quantity: Math.max(
+              1,
+              Math.round((item.dailyConsumption || 1) * 15)
+            ),
+            unit: item.unit,
+            isPurchased: false,
+          });
+        }
+
+        const itemInfo = {
+          id: item._id,
+          name: item.name,
+          category: item.category,
+          currentQuantity: item.currentQuantity,
+          unit: item.unit,
+          dailyConsumption: item.dailyConsumption,
+          daysRemaining: computed.daysRemaining,
+          status: computed.status,
+        };
+        allLowStockItems.push(itemInfo);
+
+        const prevSeverity =
+          item.lastLowStockAlertDate === todayDateStr
+            ? LOW_STOCK_SEVERITY[item.lastLowStockAlertStatus || "OK"] || 0
+            : -1;
+        const currSeverity = LOW_STOCK_SEVERITY[computed.status] || 0;
+
+        if (currSeverity > prevSeverity) {
+          patchData.lastLowStockAlertDate = todayDateStr;
+          patchData.lastLowStockAlertStatus = computed.status;
+          alertedItems.push(itemInfo);
+        }
+      } else if (item.lastLowStockAlertStatus) {
+        patchData.lastLowStockAlertDate = undefined;
+        patchData.lastLowStockAlertStatus = undefined;
+      }
+
+      if (Object.keys(patchData).length > 0) {
+        await ctx.db.patch(item._id, patchData);
+      }
+    }
+
+    return {
+      alertedItems,
+      allLowStockItems,
+    };
   },
 });

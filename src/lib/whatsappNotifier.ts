@@ -175,3 +175,92 @@ export async function notifyPetMembersOnWhatsApp(params: {
     return { notifiedCount: 0, recipients: [] };
   }
 }
+
+export interface LowStockAlertItem {
+  id: string;
+  name: string;
+  category: string;
+  currentQuantity: number;
+  unit: string;
+  dailyConsumption: number;
+  daysRemaining: number | null;
+  status: string;
+}
+
+export async function checkAndSendLowStockAlerts(params: {
+  convex?: ConvexHttpClient;
+  petId: string;
+  phoneIdOverride?: string;
+}): Promise<{
+  alertedCount: number;
+  alertedItems: LowStockAlertItem[];
+  alertText: string;
+  recipients: Array<{ name: string; phone: string }>;
+}> {
+  try {
+    if (!params.petId) {
+      return { alertedCount: 0, alertedItems: [], alertText: "", recipients: [] };
+    }
+
+    const client = params.convex || getDefaultConvexClient();
+    const res = await client.mutation(api.inventory.checkAndMarkLowStockAlerts, {
+      petId: params.petId as any,
+    });
+
+    const alertedItems = (res?.alertedItems || []) as LowStockAlertItem[];
+    if (alertedItems.length === 0) {
+      return { alertedCount: 0, alertedItems: [], alertText: "", recipients: [] };
+    }
+
+    const recipientData = await client.query(api.whatsapp.getPetNotificationRecipients, {
+      petId: params.petId as any,
+    });
+    const petName = recipientData?.petName || "Pet";
+    const recipients = recipientData?.recipients || [];
+
+    const itemLines = alertedItems.map((item) => {
+      const durationPart =
+        item.currentQuantity <= 0
+          ? "esgotado"
+          : item.daysRemaining !== null && item.daysRemaining !== undefined
+          ? `~${Math.round(item.daysRemaining)} dia(s) de duração`
+          : "saldo baixo";
+      return `• *${item.name}*: restam *${item.currentQuantity} ${item.unit}* (${durationPart}) — Status: *${item.status}*`;
+    });
+
+    const alertText =
+      `⚠️ *Alerta de Estoque Acabando — ${petName}*\n\n` +
+      `Os seguintes itens precisam de atenção ou reposição:\n` +
+      `${itemLines.join("\n")}\n\n` +
+      `🛒 _Os itens já foram adicionados automaticamente à Lista de Compras do PetRec!_\n` +
+      `💡 _Quando repor, avise por aqui: "Comprei X de ${alertedItems[0].name}"._`;
+
+    const apiToken =
+      process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
+    const phoneId =
+      params.phoneIdOverride || process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+    if (apiToken && phoneId && recipients.length > 0) {
+      await Promise.allSettled(
+        recipients.map((recipient) =>
+          sendMetaWhatsAppMessage({
+            to: recipient.phone,
+            text: alertText,
+            apiToken,
+            phoneId,
+          })
+        )
+      );
+    }
+
+    return {
+      alertedCount: alertedItems.length,
+      alertedItems,
+      alertText,
+      recipients: recipients.map((r) => ({ name: r.name, phone: r.phone })),
+    };
+  } catch (err) {
+    console.warn("[WhatsAppNotifier] Aviso ao checar alerta de estoque baixo:", err);
+    return { alertedCount: 0, alertedItems: [], alertText: "", recipients: [] };
+  }
+}

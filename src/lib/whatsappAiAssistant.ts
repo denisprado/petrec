@@ -111,6 +111,144 @@ export interface PendingItemCandidate {
   currentQuantity: number;
 }
 
+function stripDosageAndParens(raw: string): string {
+  return normalizeText(raw)
+    .replace(/\([^)]*\)/g, " ")
+    .replace(
+      /\b\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|mcg|g|kg|ml|ui|un|unidades?|comprimidos?|capsulas?|doses?)\b/g,
+      " "
+    )
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function hasWordInNormalizedText(normText: string, phrase: string): boolean {
+  if (!phrase || phrase.length < 2) return false;
+  const rx = new RegExp(`(?:^|\\b|\\s)${escapeRegex(phrase)}(?:$|\\b|\\s)`, "i");
+  return rx.test(normText);
+}
+
+const INVENTORY_STOPWORDS = new Set([
+  "de",
+  "da",
+  "do",
+  "dos",
+  "das",
+  "um",
+  "uma",
+  "o",
+  "a",
+  "os",
+  "as",
+  "saco",
+  "pacote",
+  "caixa",
+  "cartela",
+  "frasco",
+  "balde",
+  "pote",
+  "racao",
+  "comida",
+  "remedio",
+  "medicamento",
+  "comprimido",
+  "comprimidos",
+  "capsula",
+  "capsulas",
+  "estoque",
+  "atual",
+  "saldo",
+  "qual",
+  "quanto",
+  "quantos",
+  "para",
+  "com",
+  "sobre",
+  "ainda",
+  "tem",
+]);
+
+export function findInventoryMatchesInMessage(
+  messageText: string,
+  snapshot: PetContextSnapshot
+): InventoryWithForecast[] {
+  const normMsg = normalizeText(messageText);
+  if (!normMsg || !snapshot.inventory.length) return [];
+
+  const matched: InventoryWithForecast[] = [];
+  for (const item of snapshot.inventory) {
+    const fullName = normalizeText(item.name);
+    const baseName = stripDosageAndParens(item.name);
+
+    if (
+      (fullName.length >= 3 && hasWordInNormalizedText(normMsg, fullName)) ||
+      (baseName.length >= 3 && hasWordInNormalizedText(normMsg, baseName))
+    ) {
+      matched.push(item);
+      continue;
+    }
+
+    const tokens = baseName
+      .split(/[\s,.-]+/)
+      .filter((t) => t.length >= 4 && !INVENTORY_STOPWORDS.has(t));
+    if (tokens.some((tok) => hasWordInNormalizedText(normMsg, tok))) {
+      matched.push(item);
+    }
+  }
+
+  return matched;
+}
+
+function extractStockQuantityAndUnit(
+  cleanText: string
+): { quantity: number; unit?: string } | null {
+  const sanitized = cleanText.replace(
+    /\b\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|mcg|ui)\b/gi,
+    " "
+  );
+  const preferredMatch = sanitized.match(
+    /(?:para|como|em|:\s*|=\s*|\be\s+|\bsao\s+|\btem\s+|\brestam\s+|\bsobr(?:ou|aram)\s+|compr(?:ei|amos)\s+(?:mais\s+)?|cheg(?:ou|aram)\s+|adicionei\s+|repus\s+)\s*(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|gotas?|ml|unidades?|un)?\b/i
+  );
+  const match =
+    preferredMatch ||
+    sanitized.match(
+      /(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|gotas?|ml|unidades?|un)?\b/i
+    );
+  if (!match) return null;
+  const quantity = parseFloat(match[1].replace(",", "."));
+  if (isNaN(quantity)) return null;
+  return { quantity, unit: match[2] };
+}
+
+function formatInventoryItemDetail(
+  item: InventoryWithForecast,
+  petName: string
+): string {
+  const fc = item.forecast;
+  const daysStr =
+    fc.daysRemaining === Infinity
+      ? "sob demanda"
+      : `${Math.round(fc.daysRemaining)} dia(s)`;
+  const endDateStr = fc.estimatedEndDate
+    ? format(fc.estimatedEndDate, "dd/MM/yyyy", { locale: ptBR })
+    : "não calculada";
+  const icon =
+    item.category === "racao" ? "🥣" : item.category === "medicamento" ? "💊" : "📦";
+
+  return (
+    `${icon} *Estoque de ${item.name} — ${petName}*\n\n` +
+    `• Saldo atual: *${item.currentQuantity} ${item.unit}*\n` +
+    `• Consumo diário: *${item.dailyConsumption} ${item.unit}/dia*\n` +
+    `• Duração estimada: *${daysStr}*${
+      fc.estimatedEndDate ? ` (término em *${endDateStr}*)` : ""
+    }\n` +
+    `• Comprar até: *${fc.comprarAteLabel}* • Status: *${fc.status}*\n\n` +
+    `💡 _Para interagir, você pode enviar:_\n` +
+    `• _"Comprei 30 ${item.unit} de ${item.name}"_\n` +
+    `• _"Atualiza o estoque de ${item.name} para 20 ${item.unit}"_`
+  );
+}
+
 function findMatchingInventoryCandidates(
   inventory: InventoryWithForecast[],
   itemName?: string,
@@ -120,7 +258,16 @@ function findMatchingInventoryCandidates(
 
   if (itemName) {
     const cleanTarget = normalizeText(itemName);
-    const exactMatch = inventory.find((item) => normalizeText(item.name) === cleanTarget);
+    const baseTarget = stripDosageAndParens(itemName);
+
+    const exactMatch = inventory.find((item) => {
+      const full = normalizeText(item.name);
+      const base = stripDosageAndParens(item.name);
+      return (
+        full === cleanTarget ||
+        (base && (base === cleanTarget || (baseTarget && base === baseTarget)))
+      );
+    });
     if (exactMatch) return [exactMatch];
 
     // Se o usuário citou termo genérico de ração/comida e existem várias rações, retornar todas para desambiguação
@@ -133,38 +280,25 @@ function findMatchingInventoryCandidates(
       if (racoes.length > 0) return racoes;
     }
 
-    const stopWords = new Set([
-      "de",
-      "da",
-      "do",
-      "dos",
-      "das",
-      "um",
-      "uma",
-      "o",
-      "a",
-      "saco",
-      "pacote",
-      "caixa",
-      "cartela",
-      "frasco",
-      "balde",
-      "pote",
-      "racao",
-      "comida",
-    ]);
-    const tokens = cleanTarget
+    const tokens = (baseTarget || cleanTarget)
       .split(/[\s,.-]+/)
-      .filter((t) => t.length >= 3 && !stopWords.has(t));
+      .filter((t) => t.length >= 3 && !INVENTORY_STOPWORDS.has(t));
 
     const matched: InventoryWithForecast[] = [];
     for (const item of inventory) {
       const cleanName = normalizeText(item.name);
-      if (cleanName.includes(cleanTarget) || cleanTarget.includes(cleanName)) {
+      const baseName = stripDosageAndParens(item.name);
+      if (
+        cleanName.includes(cleanTarget) ||
+        cleanTarget.includes(cleanName) ||
+        (baseTarget &&
+          baseName &&
+          (baseName.includes(baseTarget) || baseTarget.includes(baseName)))
+      ) {
         matched.push(item);
         continue;
       }
-      if (tokens.some((tok) => cleanName.includes(tok))) {
+      if (tokens.some((tok) => cleanName.includes(tok) || baseName.includes(tok))) {
         matched.push(item);
       }
     }
@@ -1770,10 +1904,11 @@ export async function executeAssistantToolCall(params: {
       const racao = resolved.item;
       const rawDaily = Number(args.dailyQuantityGrams);
       if (!rawDaily || rawDaily <= 0) {
-        return { replyText: "⚠️ Informe um consumo diário válido em gramas (ex: 240g)." };
+        return { replyText: "⚠️ Informe um consumo diário válido (ex: 240g ou 2 comprimidos)." };
       }
 
-      const convertedDaily = convertQuantityForTargetUnit(rawDaily, "g", racao.unit);
+      const sourceUnit = args.unit || (racao.category === "racao" ? "g" : racao.unit);
+      const convertedDaily = convertQuantityForTargetUnit(rawDaily, sourceUnit, racao.unit);
       const forecast = calculateStockForecast({
         currentQuantity: racao.currentQuantity,
         dailyConsumption: convertedDaily,
@@ -2030,18 +2165,158 @@ async function interpretSingleClauseNlu(
     };
   }
 
-  // 1. Perguntas de consulta rápida (Q&A)
-  if (
+  // 1. Perguntas de consulta rápida (Q&A) e consultas de estoque
+  const hasStockMutationVerb =
+    /\b(?:comprei|compramos|chegou|chegaram|adicionei|adiciona|adicionou|repus|repor|atualiza|atualizar|atualize|muda|mudar|mude|define|definir|defina|coloca|colocar|ajusta|ajustar|ajuste|altera|alterar|altere|pesei|contei)\b/.test(
+      clean
+    );
+  const looksLikeStockAssignment =
+    /\b(?:e|sao|esta com|tem|foi para|agora tem)\s+\d+(?:[.,]\d+)?/.test(clean) ||
+    /[:=]\s*\d/.test(clean);
+  const isQuestionLike =
     clean.includes("?") ||
-    clean.startsWith("quando") ||
-    clean.startsWith("quantos") ||
-    clean.startsWith("alguem") ||
-    clean.startsWith("ja deram") ||
-    clean.startsWith("como esta") ||
-    clean.startsWith("qual ")
-  ) {
-    // 1a. Previsão de ração / estoque
-    if (clean.includes("racao") || clean.includes("comida") || clean.includes("acabar") || clean.includes("dura")) {
+    /^(?:qual|quais|quanto|quantos|quando|como esta|alguem|ja deram|tem )\b/.test(clean);
+  const isDirectStockQuery =
+    !hasStockMutationVerb &&
+    !looksLikeStockAssignment &&
+    (/^(?:estoque|saldo|previsao)\b/.test(clean) ||
+      clean.includes("o que esta acabando") ||
+      clean.includes("quais remedios estao acabando") ||
+      clean.includes("o que precisa comprar") ||
+      clean.includes("itens em falta"));
+
+  if (isQuestionLike || isDirectStockQuery) {
+    const matchedInventory = findInventoryMatchesInMessage(messageText, snapshot);
+    const isAskingAboutTodayDose =
+      clean.includes("ja deram") ||
+      clean.includes("tomei") ||
+      clean.includes("tomou") ||
+      clean.includes("horario") ||
+      clean.includes("doses de hoje") ||
+      clean.includes("tomou o remedio");
+
+    // 1a. Consulta específica de item no estoque ("Qual é o estoque atual de bezafibrato?")
+    if (
+      matchedInventory.length > 0 &&
+      !isAskingAboutTodayDose &&
+      (clean.includes("estoque") ||
+        clean.includes("saldo") ||
+        clean.includes("quanto") ||
+        clean.includes("quantos") ||
+        clean.includes("restam") ||
+        clean.includes("sobrou") ||
+        clean.includes("acabar") ||
+        clean.includes("acaba") ||
+        clean.includes("dura") ||
+        isQuestionLike ||
+        isDirectStockQuery)
+    ) {
+      return {
+        handled: true,
+        replyText: matchedInventory
+          .map((item) => formatInventoryItemDetail(item, snapshot.pet.name))
+          .join("\n\n---\n\n"),
+        actionTaken: "question_answered",
+        nextState: "IDLE",
+        usedGemini: false,
+      };
+    }
+
+    // 1a-ii. O que está acabando / precisa comprar
+    if (
+      clean.includes("acabando") ||
+      clean.includes("precisa comprar") ||
+      clean.includes("em falta") ||
+      clean.includes("estoque baixo")
+    ) {
+      const lowItems = snapshot.inventory.filter((i) => i.forecast.status !== "OK");
+      if (lowItems.length === 0) {
+        return {
+          handled: true,
+          replyText: `✅ Todo o estoque de *${snapshot.pet.name}* está em dia no momento! Nenhum item em estado de atenção ou falta.`,
+          actionTaken: "question_answered",
+          nextState: "IDLE",
+          usedGemini: false,
+        };
+      }
+      const lines = lowItems.map((i) => {
+        const dStr =
+          i.forecast.daysRemaining === Infinity
+            ? "sob demanda"
+            : `~${Math.round(i.forecast.daysRemaining)} dia(s)`;
+        return `⚠️ *${i.name}*: *${i.currentQuantity} ${i.unit}* (${dStr}) — *${i.forecast.status}*`;
+      });
+      return {
+        handled: true,
+        replyText:
+          `⚠️ *Itens em Alerta de Estoque — ${snapshot.pet.name}:*\n\n${lines.join("\n")}\n\n` +
+          `💡 _Para repor, envie: "Comprei X de [nome]"._`,
+        actionTaken: "question_answered",
+        nextState: "IDLE",
+        usedGemini: false,
+      };
+    }
+
+    // 1a-iii. Estoque geral dos medicamentos/remédios
+    if (
+      (clean.includes("estoque") ||
+        clean.includes("saldo") ||
+        clean.includes("duram") ||
+        clean.includes("previsao")) &&
+      (clean.includes("remedio") || clean.includes("medicamento"))
+    ) {
+      const medsInv = snapshot.inventory.filter((i) => i.category === "medicamento");
+      if (medsInv.length === 0) {
+        return {
+          handled: true,
+          replyText: `💊 *${snapshot.pet.name}* ainda não possui medicamentos cadastrados no estoque.`,
+          actionTaken: "question_answered",
+          nextState: "IDLE",
+          usedGemini: false,
+        };
+      }
+      const lines = medsInv.map((m) => {
+        const dStr =
+          m.forecast.daysRemaining === Infinity
+            ? "sob demanda"
+            : `~${Math.round(m.forecast.daysRemaining)} dia(s)`;
+        return `• *${m.name}*: *${m.currentQuantity} ${m.unit}* (${m.dailyConsumption}/dia • ${dStr}) — *${m.forecast.status}*`;
+      });
+      return {
+        handled: true,
+        replyText: `💊 *Estoque de Medicamentos — ${snapshot.pet.name}:*\n\n${lines.join("\n")}`,
+        actionTaken: "question_answered",
+        nextState: "IDLE",
+        usedGemini: false,
+      };
+    }
+
+    // 1a-iv. Previsão de ração ou estoque geral
+    if (
+      clean.includes("racao") ||
+      clean.includes("comida") ||
+      clean.includes("acabar") ||
+      clean.includes("dura") ||
+      clean.includes("estoque") ||
+      clean.includes("saldo")
+    ) {
+      if (!clean.includes("racao") && !clean.includes("comida") && snapshot.inventory.length > 0) {
+        const lines = snapshot.inventory.map((i) => {
+          const dStr =
+            i.forecast.daysRemaining === Infinity
+              ? "sob demanda"
+              : `~${Math.round(i.forecast.daysRemaining)} dia(s)`;
+          return `• *${i.name}*: *${i.currentQuantity} ${i.unit}* (${dStr}) — *${i.forecast.status}*`;
+        });
+        return {
+          handled: true,
+          replyText: `📦 *Resumo do Estoque — ${snapshot.pet.name}:*\n\n${lines.join("\n")}`,
+          actionTaken: "question_answered",
+          nextState: "IDLE",
+          usedGemini: false,
+        };
+      }
+
       const racao = snapshot.inventory.find((i) => i.category === "racao") || snapshot.inventory[0];
       if (!racao) {
         return {
@@ -2051,21 +2326,9 @@ async function interpretSingleClauseNlu(
           usedGemini: false,
         };
       }
-      const fc = racao.forecast;
-      const daysStr =
-        fc.daysRemaining === Infinity ? "indeterminado" : `${Math.round(fc.daysRemaining)} dia(s)`;
-      const endDateStr = fc.estimatedEndDate
-        ? format(fc.estimatedEndDate, "dd/MM/yyyy", { locale: ptBR })
-        : "não calculada";
-
       return {
         handled: true,
-        replyText:
-          `📦 *Previsão da Ração — ${snapshot.pet.name}*\n\n` +
-          `• Produto: *${racao.name}*\n` +
-          `• Saldo atual: *${racao.currentQuantity} ${racao.unit}*\n` +
-          `• Duração estimada: *${daysStr}* (até cerca de *${endDateStr}*)\n` +
-          `• Comprar até: *${fc.comprarAteLabel}* (${fc.status})`,
+        replyText: formatInventoryItemDetail(racao, snapshot.pet.name),
         actionTaken: "question_answered",
         nextState: "IDLE",
         usedGemini: false,
@@ -2290,17 +2553,17 @@ async function interpretSingleClauseNlu(
     clean.includes("comprei") ||
     clean.includes("compramos") ||
     clean.includes("chegou") ||
+    clean.includes("chegaram") ||
     clean.includes("repor") ||
-    clean.includes("reposicao")
+    clean.includes("repus") ||
+    clean.includes("reposicao") ||
+    ((clean.includes("adicionei") || clean.includes("coloquei")) && clean.includes("estoque"))
   ) {
-    const qtyUnitMatch = clean.match(
-      /(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|ml|unidades?|un)?\b/
-    );
+    const qtyUnit = extractStockQuantityAndUnit(clean);
+    const matchedItems = findInventoryMatchesInMessage(messageText, snapshot);
 
     // Tentar descobrir qual item do estoque foi comprado ou extrair nome da frase
-    let itemName = snapshot.inventory.find((i) =>
-      clean.includes(normalizeText(i.name))
-    )?.name;
+    let itemName = matchedItems[0]?.name;
 
     if (!itemName) {
       if (clean.includes("racao") || clean.includes("comida")) {
@@ -2311,7 +2574,7 @@ async function interpretSingleClauseNlu(
       }
     }
 
-    if (!qtyUnitMatch) {
+    if (!qtyUnit) {
       return {
         handled: true,
         replyText:
@@ -2323,8 +2586,8 @@ async function interpretSingleClauseNlu(
       };
     }
 
-    const qty = parseFloat(qtyUnitMatch[1].replace(",", "."));
-    const unit = qtyUnitMatch[2] || "unidades";
+    const qty = qtyUnit.quantity;
+    const unit = qtyUnit.unit || matchedItems[0]?.unit || "unidades";
 
     const exec = await executeAssistantToolCall({
       convex,
@@ -2344,7 +2607,19 @@ async function interpretSingleClauseNlu(
     };
   }
 
-  // 4. Ajuste físico de estoque ("pesei o balde e tem 4,2kg", "contei a cartela e só têm 6 comprimidos")
+  // 4. Ajuste físico ou definição direta de estoque ("Atualiza o estoque de bezafibrato para 4", "pesei o balde e tem 4,2kg")
+  const matchedForAdjust = findInventoryMatchesInMessage(messageText, snapshot);
+  const isDirectStockCommand =
+    /\b(?:atualiz(?:a|e|ar)|mud(?:a|e|ar)|defin(?:a|e|ir)|ajust(?:a|e|ar)|alter(?:a|e|ar))\b/.test(
+      clean
+    ) &&
+    (clean.includes("estoque") ||
+      clean.includes("saldo") ||
+      matchedForAdjust.length > 0);
+  const isDirectStockDeclaration =
+    (clean.includes("estoque") || clean.includes("saldo")) &&
+    /\b(?:e|sao|esta com|tem|foi para|agora tem)\s+\d+(?:[.,]\d+)?/.test(clean) &&
+    !/\b(?:qual|quanto|quantos|como)\b/.test(clean);
   const isPhysicalStockCheck =
     (clean.includes("balde") ||
       clean.includes("pote") ||
@@ -2352,7 +2627,8 @@ async function interpretSingleClauseNlu(
       clean.includes("cartela") ||
       clean.includes("caixa") ||
       clean.includes("estoque") ||
-      clean.includes("contei")) &&
+      clean.includes("contei") ||
+      matchedForAdjust.length > 0) &&
     (clean.includes("tem ") ||
       clean.includes("restam") ||
       clean.includes("sobrou") ||
@@ -2360,16 +2636,15 @@ async function interpretSingleClauseNlu(
       clean.includes("so tem") ||
       clean.includes("so estao"));
 
-  if (isPhysicalStockCheck) {
-    const qtyMatch = clean.match(
-      /(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|ml|unidades?|un)?\b/
-    );
-    if (qtyMatch) {
-      const qty = parseFloat(qtyMatch[1].replace(",", "."));
-      const unit = qtyMatch[2];
-      const matchedItem = snapshot.inventory.find((i) =>
-        clean.includes(normalizeText(i.name))
-      );
+  if (
+    (isDirectStockCommand || isDirectStockDeclaration || isPhysicalStockCheck) &&
+    !clean.includes("?")
+  ) {
+    const qtyUnit = extractStockQuantityAndUnit(clean);
+    if (qtyUnit) {
+      const qty = qtyUnit.quantity;
+      const matchedItem = matchedForAdjust[0];
+      const unit = qtyUnit.unit || matchedItem?.unit;
       const itemName =
         matchedItem?.name ||
         (clean.includes("comprimido") || clean.includes("cartela")
@@ -2419,7 +2694,7 @@ async function interpretSingleClauseNlu(
     };
   }
 
-  // 5a-config. Configuração de consumo diário ("O consumo diário de ração é 240g", "come 240g por dia")
+  // 5a-config. Configuração de consumo diário ("O consumo diário de ração é 240g", "Consumo diário de bezafibrato é 2 comprimidos")
   const isDailyConfig =
     (clean.includes("consumo diario") ||
       clean.includes("por dia") ||
@@ -2430,28 +2705,28 @@ async function interpretSingleClauseNlu(
     !clean.includes("comeu");
 
   if (isDailyConfig) {
-    const dailyQtyMatch = clean.match(/(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas)?\b/);
-    if (dailyQtyMatch) {
-      const rawQty = parseFloat(dailyQtyMatch[1].replace(",", "."));
-      const unit = normalizeUnit(dailyQtyMatch[2] || "g");
-      const grams = unit === "kg" ? Math.round(rawQty * 1000) : rawQty;
-      if (grams > 0) {
-        const exec = await executeAssistantToolCall({
-          convex,
-          toolName: "update_daily_consumption",
-          args: { dailyQuantityGrams: grams },
-          snapshot,
-          userId,
-        });
-        return {
-          handled: true,
-          replyText: exec.replyText,
-          actionTaken: exec.actionTaken,
-          nextState: exec.nextState || "IDLE",
-          pendingActionPayload: exec.pendingActionPayload,
-          usedGemini: false,
-        };
-      }
+    const matchedDaily = findInventoryMatchesInMessage(messageText, snapshot)[0];
+    const dailyQtyMatch = extractStockQuantityAndUnit(clean);
+    if (dailyQtyMatch && dailyQtyMatch.quantity > 0) {
+      const exec = await executeAssistantToolCall({
+        convex,
+        toolName: "update_daily_consumption",
+        args: {
+          itemName: matchedDaily?.name,
+          dailyQuantityGrams: dailyQtyMatch.quantity,
+          unit: dailyQtyMatch.unit,
+        },
+        snapshot,
+        userId,
+      });
+      return {
+        handled: true,
+        replyText: exec.replyText,
+        actionTaken: exec.actionTaken,
+        nextState: exec.nextState || "IDLE",
+        pendingActionPayload: exec.pendingActionPayload,
+        usedGemini: false,
+      };
     }
   }
 

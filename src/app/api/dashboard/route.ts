@@ -3,6 +3,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
 import { calculateStockForecast } from "@/lib/stockCalculation";
 import { differenceInCalendarDays, startOfDay } from "date-fns";
+import { checkAndSendLowStockAlerts } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -87,6 +88,10 @@ export async function GET(request: Request) {
       if ((activePetBasic as any).routineMode === "automatic_by_exception") {
         await convex.mutation(api.inventory.syncRoutineConsumption, { petId: activePetId });
       }
+      await checkAndSendLowStockAlerts({
+        convex,
+        petId: String(activePetId),
+      });
     } catch (syncErr) {
       console.warn("[Dashboard API] Aviso ao sincronizar rotina:", syncErr);
     }

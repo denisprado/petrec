@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { computeInventoryStatus } from "./inventory";
 
 export const listByPet = query({
   args: { petId: v.id("pets") },
@@ -453,7 +454,16 @@ export const administer = mutation({
     if (args.status === "administered" && previousStatus !== "administered") {
       if (inv) {
         const newQty = Math.max(0, inv.currentQuantity - adm.quantity);
-        await ctx.db.patch(inv._id, { currentQuantity: newQty });
+        const computed = computeInventoryStatus(
+          newQty,
+          inv.dailyConsumption,
+          inv.purchaseLeadTimeDays
+        );
+        await ctx.db.patch(inv._id, {
+          currentQuantity: newQty,
+          status: computed.status,
+          estimatedEndDate: computed.estimatedEndDate,
+        });
 
         await ctx.db.insert("inventoryTransactions", {
           inventoryItemId: inv._id,
@@ -470,7 +480,19 @@ export const administer = mutation({
     if (previousStatus === "administered" && (args.status === "skipped" || args.status === "missed")) {
       if (inv) {
         const newQty = inv.currentQuantity + adm.quantity;
-        await ctx.db.patch(inv._id, { currentQuantity: newQty });
+        const computed = computeInventoryStatus(
+          newQty,
+          inv.dailyConsumption,
+          inv.purchaseLeadTimeDays
+        );
+        await ctx.db.patch(inv._id, {
+          currentQuantity: newQty,
+          status: computed.status,
+          estimatedEndDate: computed.estimatedEndDate,
+          ...(computed.status === "OK"
+            ? { lastLowStockAlertDate: undefined, lastLowStockAlertStatus: undefined }
+            : {}),
+        });
 
         await ctx.db.insert("inventoryTransactions", {
           inventoryItemId: inv._id,
@@ -572,7 +594,16 @@ export const syncRoutineMedications = mutation({
 
           if (inv) {
             const newQty = Math.max(0, inv.currentQuantity - adm.quantity);
-            await ctx.db.patch(inv._id, { currentQuantity: newQty });
+            const computed = computeInventoryStatus(
+              newQty,
+              inv.dailyConsumption,
+              inv.purchaseLeadTimeDays
+            );
+            await ctx.db.patch(inv._id, {
+              currentQuantity: newQty,
+              status: computed.status,
+              estimatedEndDate: computed.estimatedEndDate,
+            });
 
             await ctx.db.insert("inventoryTransactions", {
               inventoryItemId: inv._id,

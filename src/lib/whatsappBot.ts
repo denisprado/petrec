@@ -6,7 +6,11 @@ import {
   PendingItemCandidate,
   processNaturalLanguageWithAI,
 } from "./whatsappAiAssistant";
-import { notifyPetMembersOnWhatsApp } from "./whatsappNotifier";
+import { calculateStockForecast } from "./stockCalculation";
+import {
+  checkAndSendLowStockAlerts,
+  notifyPetMembersOnWhatsApp,
+} from "./whatsappNotifier";
 
 const NOTIFY_ACTIONS = new Set([
   "feeding_exception_recorded",
@@ -196,6 +200,13 @@ export interface ProcessWhatsAppResult {
   actionTaken?: string;
   currentState: string;
   notifiedRecipients?: Array<{ name: string; phone: string }>;
+  lowStockAlerts?: Array<{
+    id: string;
+    name: string;
+    status: string;
+    currentQuantity: number;
+    unit: string;
+  }>;
 }
 
 interface NotificationTracker {
@@ -220,46 +231,74 @@ export async function processWhatsAppMessage(
     .filter(Boolean);
   const shouldNotify = actions.some((a) => NOTIFY_ACTIONS.has(a));
 
-  if (!shouldNotify) {
-    return result;
-  }
+  if (shouldNotify) {
+    const targets: Array<{ petId: string; summary: string }> =
+      tracker.multiNotifications && tracker.multiNotifications.length > 0
+        ? tracker.multiNotifications
+        : tracker.activePetId
+        ? [{ petId: tracker.activePetId, summary: result.replyText }]
+        : [];
 
-  const targets: Array<{ petId: string; summary: string }> =
-    tracker.multiNotifications && tracker.multiNotifications.length > 0
-      ? tracker.multiNotifications
-      : tracker.activePetId
-      ? [{ petId: tracker.activePetId, summary: result.replyText }]
-      : [];
+    if (targets.length > 0) {
+      const uniqueRecipientsMap = new Map<string, { name: string; phone: string }>();
+      for (const target of targets) {
+        const cleanSummary = target.summary
+          .replace(/^🔄\s*_\(Pet em foco alternado para[^)]+\)_\s*/i, "")
+          .trim();
 
-  if (targets.length === 0) {
-    return result;
-  }
+        const notified = await notifyPetMembersOnWhatsApp({
+          convex,
+          petId: target.petId,
+          actorUserId: tracker.actorUserId,
+          summary: cleanSummary,
+          phoneIdOverride: params.metaPhoneNumberId,
+        });
 
-  const uniqueRecipientsMap = new Map<string, { name: string; phone: string }>();
-  for (const target of targets) {
-    const cleanSummary = target.summary
-      .replace(/^🔄\s*_\(Pet em foco alternado para[^)]+\)_\s*/i, "")
-      .trim();
+        for (const r of notified.recipients) {
+          uniqueRecipientsMap.set(r.phone.replace(/\D/g, ""), r);
+        }
+      }
 
-    const notified = await notifyPetMembersOnWhatsApp({
-      convex,
-      petId: target.petId,
-      actorUserId: tracker.actorUserId,
-      summary: cleanSummary,
-      phoneIdOverride: params.metaPhoneNumberId,
-    });
-
-    for (const r of notified.recipients) {
-      uniqueRecipientsMap.set(r.phone.replace(/\D/g, ""), r);
+      const recipients = Array.from(uniqueRecipientsMap.values());
+      if (recipients.length > 0) {
+        result.notifiedRecipients = recipients;
+        result.replyText += `\n\n📣 _Notificação enviada no WhatsApp para: ${recipients
+          .map((r) => r.name.split(" ")[0])
+          .join(", ")}_`;
+      }
     }
   }
 
-  const recipients = Array.from(uniqueRecipientsMap.values());
-  if (recipients.length > 0) {
-    result.notifiedRecipients = recipients;
-    result.replyText += `\n\n📣 _Notificação enviada no WhatsApp para: ${recipients
-      .map((r) => r.name.split(" ")[0])
-      .join(", ")}_`;
+  // Verificar se algum item do pet entrou em estoque crítico/atenção e disparar alerta
+  const alertPetIds = new Set<string>();
+  if (tracker.activePetId) alertPetIds.add(tracker.activePetId);
+  for (const m of tracker.multiNotifications || []) {
+    if (m.petId) alertPetIds.add(m.petId);
+  }
+
+  const triggeredAlerts: NonNullable<ProcessWhatsAppResult["lowStockAlerts"]> = [];
+  for (const pid of Array.from(alertPetIds)) {
+    const lowStockRes = await checkAndSendLowStockAlerts({
+      convex,
+      petId: pid,
+      phoneIdOverride: params.metaPhoneNumberId,
+    });
+    if (lowStockRes.alertedCount > 0 && lowStockRes.alertText) {
+      for (const it of lowStockRes.alertedItems) {
+        triggeredAlerts.push({
+          id: it.id,
+          name: it.name,
+          status: it.status,
+          currentQuantity: it.currentQuantity,
+          unit: it.unit,
+        });
+      }
+      result.replyText += `\n\n${lowStockRes.alertText}`;
+    }
+  }
+
+  if (triggeredAlerts.length > 0) {
+    result.lowStockAlerts = triggeredAlerts;
   }
 
   return result;
@@ -1204,8 +1243,25 @@ async function executeWhatsAppMessage(
       reply += "Nenhum item cadastrado no estoque deste pet.";
     } else {
       for (const item of inv) {
-        reply += `• *${item.name}*: ${item.currentQuantity} ${item.unit} (Consumo: ${item.dailyConsumption} ${item.unit}/dia) — Status: *${item.status}*\n`;
+        const fc = calculateStockForecast({
+          currentQuantity: item.currentQuantity,
+          dailyConsumption: item.dailyConsumption,
+          unit: item.unit,
+          purchaseLeadTimeDays: item.purchaseLeadTimeDays,
+        });
+        const statusDot =
+          fc.status === "OK"
+            ? "🟢"
+            : fc.status === "ATENÇÃO"
+            ? "🟡"
+            : "🔴";
+        const daysLabel =
+          fc.daysRemaining === Infinity
+            ? "sob demanda"
+            : `~${Math.round(fc.daysRemaining)} dia(s)`;
+        reply += `${statusDot} *${item.name}*: *${item.currentQuantity} ${item.unit}* (${item.dailyConsumption}/dia • ${daysLabel}) — *${fc.status}*\n`;
       }
+      reply += `\n💡 _Você pode perguntar: "Qual o estoque de [nome]?", "O que está acabando?" ou atualizar: "Comprei 30 de [nome]" / "Atualiza o estoque de [nome] para 10"._`;
     }
 
     return {

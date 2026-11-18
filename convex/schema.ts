@@ -122,6 +122,8 @@ export default defineSchema({
     status: v.string(), // "OK", "ATENÇÃO", "COMPRAR AGORA", "SEM ESTOQUE", "ESTOQUE INSUFICIENTE"
     notes: v.optional(v.string()),
     lastRoutineSyncDate: v.optional(v.string()),
+    lastLowStockAlertDate: v.optional(v.string()),
+    lastLowStockAlertStatus: v.optional(v.string()),
   })
     .index("by_pet", ["petId"])
     .index("by_medication", ["medicationId"]),
