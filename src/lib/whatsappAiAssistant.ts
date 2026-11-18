@@ -41,6 +41,7 @@ export interface AiAssistantResult {
   actionTaken?: string;
   nextState: string;
   pendingActionPayload?: string;
+  newActivePetId?: string;
   usedGemini: boolean;
 }
 
@@ -202,10 +203,11 @@ export function findInventoryMatchesInMessage(
 function extractStockQuantityAndUnit(
   cleanText: string
 ): { quantity: number; unit?: string } | null {
-  const sanitized = cleanText.replace(
-    /\b\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|mcg|ui)\b/gi,
-    " "
-  );
+  const sanitized = cleanText
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|mcg|ui)\b/gi, " ")
+    .replace(/r\$\s*\d+(?:[.,]\d{1,2})?/gi, " ")
+    .replace(/\b\d+(?:[.,]\d{1,2})?\s*reais\b/gi, " ")
+    .replace(/\bpor\s+\d+(?:[.,]\d{1,2})?(?!\s*(?:kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|gotas?|ml|unidades?|un|dias?))\b/gi, " ");
   const preferredMatch = sanitized.match(
     /(?:para|como|em|:\s*|=\s*|\be\s+|\bsao\s+|\btem\s+|\brestam\s+|\bsobr(?:ou|aram)\s+|compr(?:ei|amos)\s+(?:mais\s+)?|cheg(?:ou|aram)\s+|adicionei\s+|repus\s+)\s*(\d+(?:[.,]\d+)?)\s*(kg|kilos?|quilos?|g|gramas|comprimidos?|capsulas?|gotas?|ml|unidades?|un)?\b/i
   );
@@ -392,7 +394,14 @@ function parseVaccineFromText(messageText: string): {
     ((clean.includes("tomou") || clean.includes("apliquei") || clean.includes("aplicou")) &&
       (clean.includes("vermifugo") || clean.includes("antipulgas") || clean.includes("rabica")));
 
-  if (!isVaccineIntent) return null;
+  if (
+    !isVaccineIntent ||
+    /\b(?:agend(?:a|e|ar)|marc(?:a|e|ar)|exclu(?:i|a|ir)|apag(?:a|ue|ar)|delet(?:a|e|ar)|remov(?:a|e|er)|cancel(?:a|e|ar)|edit(?:a|e|ar)|alter(?:a|e|ar))\b/.test(
+      clean
+    )
+  ) {
+    return null;
+  }
 
   let vaccineName = "Vacina";
   const knownPatterns: Array<[RegExp, string]> = [
@@ -560,6 +569,18 @@ function parseMedicationsFromText(
     return [];
   }
 
+  const isPetRegistrationText =
+    (/\b(?:novo\s+pet|nova\s+pet|pet\s+chamad[oa]|de\s+estimacao|adotei|resgatei)\b/.test(clean) ||
+      /\b(?:cadastre|cadastra|cadastrar|adiciona|adicionar)\s+(?:o\s+|a\s+|um\s+|uma\s+)?(?:meu\s+|minha\s+)?(?:pet|animal|bich[oa]|bichinh[oa]|mascote)\b/.test(
+        clean
+      )) &&
+    !clean.includes("remedio") &&
+    !clean.includes("medicamento");
+
+  if (isPetRegistrationText) {
+    return [];
+  }
+
   const hasFormalMedTrigger =
     clean.includes("receitou") ||
     clean.includes("prescreveu") ||
@@ -701,6 +722,331 @@ function parseMedicationsFromText(
   return parsedResults;
 }
 
+const PET_SPECIES_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(?:sarues?|gambas?)\b/i, "Saruê"],
+  [/\b(?:gat[oa]s?|felin[oa]s?|gatinh[oa]s?)\b/i, "Gato"],
+  [/\b(?:cao|caes|cachorr[oa]s?|cadel[ao]s?|cachorrinh[oa]s?|canin[oa]s?)\b/i, "Cão"],
+  [/\b(?:aves?|passaros?|passarinh[oa]s?|calopsitas?|papagaios?|periquitos?)\b/i, "Ave"],
+  [/\b(?:coelhos?|hamsters?|roedor(?:es)?|porquinh[oa]s?(?:\s+da\s+india)?|chinchilas?)\b/i, "Roedor"],
+  [/\b(?:jabutis?|tartarugas?|cagados?|rept(?:il|eis)|iguanas?)\b/i, "Réptil"],
+  [/\b(?:furao|furoes|ferrets?)\b/i, "Furão"],
+  [/\b(?:peixes?|bettas?)\b/i, "Peixe"],
+];
+
+function getDefaultPetPhoto(species: string): string {
+  const s = normalizeText(species);
+  if (s.includes("gato")) {
+    return "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=500&auto=format&fit=crop&q=80";
+  }
+  if (s.includes("ave")) {
+    return "https://images.unsplash.com/photo-1522858547137-f1dcec554f55?w=500&auto=format&fit=crop&q=80";
+  }
+  if (s.includes("sarue") || s.includes("roedor") || s.includes("furao")) {
+    return "https://images.unsplash.com/photo-1425082661705-1834bfd09dca?w=500&auto=format&fit=crop&q=80";
+  }
+  return "https://images.unsplash.com/photo-1552053831-71594a27632d?w=500&auto=format&fit=crop&q=80";
+}
+
+function hasPetProfileOrSpeciesIndicator(cleanText: string): boolean {
+  if (
+    /\b(?:pet|animal|bich[oa]|bichinh[oa]|de\s+estimacao|mascote|adotei|resgatei)\b/.test(
+      cleanText
+    )
+  ) {
+    return true;
+  }
+  return PET_SPECIES_PATTERNS.some(([rx]) => rx.test(cleanText));
+}
+
+export interface ParsedPetCreationInput {
+  name: string;
+  species: string;
+  breed?: string;
+  sex?: string;
+  weightKg?: number;
+  notes?: string;
+}
+
+export function parsePetCreationFromText(
+  messageText: string,
+  existingPetNames: string[] = []
+): ParsedPetCreationInput | null {
+  const trimmed = messageText.trim();
+  const clean = normalizeText(trimmed);
+  if (!clean || clean.includes("?")) return null;
+
+  // Nunca roubar frases explícitas de medicamentos, vacinas, ração ou exclusão/edição
+  if (
+    /^(?:exclu|apag|delet|remov|edit|alter|mud|atualiz|agend|marc|trocar|mudar|vincular|entrar)\b/.test(
+      clean
+    ) ||
+    /\b(?:remedio|medicamento|comprimid|capsul|gotas|vacina|racao|petisco|consulta|exame|lista\s+de\s+compras|no\s+estoque|em\s+estoque)\b/.test(
+      clean
+    )
+  ) {
+    return null;
+  }
+
+  const hasExplicitPetTrigger =
+    /\b(?:novo\s+pet|nova\s+pet|pet\s+chamad[oa]|de\s+estimacao|adotei|resgatei)\b/.test(
+      clean
+    ) ||
+    /\b(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir|registra|registrar)\s+(?:o\s+|a\s+|um\s+|uma\s+)?(?:meu\s+|minha\s+)?(?:nov[oa]\s+)?(?:pet|animal|bich[oa]|bichinh[oa]|mascote)\b/.test(
+      clean
+    ) ||
+    /\b(?:cadastre|cadastra|cadastrar|adiciona|adicionar|registra|registrar|tenho\s+um|tenho\s+uma|ganhei)\b/.test(
+      clean
+    ) && PET_SPECIES_PATTERNS.some(([rx]) => rx.test(clean));
+
+  if (!hasExplicitPetTrigger) return null;
+
+  let species = "Cão";
+  for (const [rx, label] of PET_SPECIES_PATTERNS) {
+    if (rx.test(clean)) {
+      species = label;
+      break;
+    }
+  }
+
+  const weightMatch = trimmed.match(/(\d+(?:[.,]\d+)?)\s*(?:kg|kilos?|quilos?)\b/i);
+  const weightKg = weightMatch ? parseFloat(weightMatch[1].replace(",", ".")) : undefined;
+
+  const sex = /\b(?:femea|cadela|gata|menina)\b/i.test(clean)
+    ? "Fêmea"
+    : /\b(?:macho|menino)\b/i.test(clean)
+    ? "Macho"
+    : undefined;
+
+  const breedMatch = trimmed.match(/\bra[çc]a\s+([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,25}?)(?=,|\.|macho|f[eê]mea|\d+\s*kg|$)/i);
+  const breed = breedMatch?.[1]?.trim()
+    ? breedMatch[1].trim()
+    : /\b(?:srd|vira[-\s]?lata)\b/i.test(clean)
+    ? "SRD"
+    : undefined;
+
+  let extractedName = "";
+  const calledMatch = trimmed.match(
+    /(?:chamad[oa]|se\s+chama|de\s+nome)\s+([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,25}?)(?=\s*(?:,|;|de\s+\d|\d+\s*kg|\be\b|\bcom\b|\bmeu\b|\bminha\b|\bmacho\b|\bf[eê]mea\b|\bra[çc]a\b|$))/i
+  );
+  const cadastrePetMatch = trimmed.match(
+    /^(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir|registra|registrar)\s+(?:(?:o|a|um|uma)\s+)?(?:(?:nov[oa])\s+)?(?:(?:pet|animal|bich[oa]|bichinh[oa]|mascote)\s*(?::|-|\s)\s*)?(?:(?:o|a)\s+)?([A-Za-zÀ-ú][A-Za-zÀ-ú0-9\s-]{1,25}?)(?=\s*(?:,|;|\bmeu\b|\bminha\b|\bum\b|\buma\b|c[ãa]o|cachorr[oa]|gat[oa]|saru[eê]|ave|roedor|\bde\s+estima|\d+\s*kg|$))/i
+  );
+
+  if (calledMatch?.[1]?.trim()) {
+    extractedName = calledMatch[1].trim();
+  } else if (cadastrePetMatch?.[1]?.trim()) {
+    const candidate = cadastrePetMatch[1].trim();
+    const candidateClean = normalizeText(candidate);
+    if (!PET_SPECIES_PATTERNS.some(([rx]) => rx.test(candidateClean)) && candidateClean !== "pet" && candidateClean !== "novo pet") {
+      extractedName = candidate;
+    }
+  }
+
+  if (!extractedName) {
+    let residual = trimmed;
+    if (weightMatch) residual = residual.replace(weightMatch[0], " ");
+    if (breedMatch) residual = residual.replace(breedMatch[0], " ");
+    residual = residual
+      .replace(/\bde\s+estima[çc][ãa]o\b/gi, " ")
+      .replace(
+        /\b(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir|registra|registrar|tenho|adotei|resgatei|ganhei|um|uma|o|a|novo|nova|meu|minha|se\s+chama|chamad[oa]|de|com|peso|pesa|pesando|pet|animal|bich[oa]|bichinh[oa]|mascote|macho|f[eê]mea|srd|vira-lata)\b/gi,
+        " "
+      );
+    for (const [rx] of PET_SPECIES_PATTERNS) {
+      residual = residual.replace(new RegExp(rx.source, "gi"), " ");
+    }
+    extractedName = residual
+      .replace(/[,:;.-]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  extractedName = extractedName.replace(/^[,:.\s-]+|[,:.\s-]+$/g, "").trim();
+  if (!extractedName || extractedName.length < 2 || /^\d+$/.test(extractedName)) {
+    return null;
+  }
+
+  const normalizedExtracted = normalizeText(extractedName);
+  const alreadyExists = existingPetNames.some(
+    (p) => normalizeText(p) === normalizedExtracted
+  );
+  if (alreadyExists && !clean.includes("novo pet") && !clean.includes("nova pet")) {
+    return null;
+  }
+
+  return {
+    name: extractedName.charAt(0).toUpperCase() + extractedName.slice(1),
+    species,
+    breed,
+    sex,
+    weightKg:
+      weightKg && !isNaN(weightKg) && weightKg > 0 && weightKg < 200
+        ? weightKg
+        : undefined,
+    notes: trimmed,
+  };
+}
+
+function extractPurchasePriceAndSupplier(messageText: string): {
+  totalPrice?: number;
+  supplier?: string;
+} {
+  let totalPrice: number | undefined;
+  const priceMatch = messageText.match(
+    /(?:r\$\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*reais|(?:por|paguei|custou|valor(?:\s+de)?)\s+(?:r\$\s*)?(\d+(?:[.,]\d{1,2})?)(?!\s*(?:kg|kilos?|quilos?|g|gramas|comprimidos?|c[aá]psulas?|gotas?|ml|unidades?|un|dias?|x|vezes)))/i
+  );
+  const rawPrice = priceMatch?.[1] || priceMatch?.[2] || priceMatch?.[3];
+  if (rawPrice) {
+    const val = parseFloat(rawPrice.replace(",", "."));
+    if (!isNaN(val) && val > 0) totalPrice = val;
+  }
+
+  let supplier: string | undefined;
+  const supplierMatch = messageText.match(
+    /\b(?:na|no|em)\s+(?:loja\s+|pet\s*shop\s+|farm[aá]cia\s+|cl[ií]nica\s+)?([A-Za-zÀ-ú0-9][A-Za-zÀ-ú0-9\s.&'-]{1,28}?)(?=\s*(?:por\b|r\$|\bvalor\b|\bpaguei\b|,|\.|$))/i
+  );
+  if (supplierMatch?.[1]) {
+    const cand = supplierMatch[1].trim();
+    const candNorm = normalizeText(cand);
+    if (
+      cand.length >= 2 &&
+      !candNorm.includes("estoque") &&
+      !candNorm.includes("lista de compras") &&
+      !/^\d/.test(candNorm)
+    ) {
+      supplier = cand;
+    }
+  }
+
+  return { totalPrice, supplier };
+}
+
+function findMatchingMedicationCandidates(
+  medications: any[],
+  medicationName?: string
+): any[] {
+  if (!medications.length) return [];
+  if (!medicationName) return medications.filter((m) => m.status === "active");
+
+  const cleanTarget = normalizeText(medicationName);
+  const baseTarget = stripDosageAndParens(medicationName);
+
+  const exact = medications.filter((m) => {
+    const full = normalizeText(m.name);
+    const fullWithDosage = normalizeText(`${m.name} ${m.dosage || ""}`.trim());
+    return (
+      full === cleanTarget ||
+      fullWithDosage === cleanTarget ||
+      (baseTarget && full === baseTarget)
+    );
+  });
+  if (exact.length > 0) return exact;
+
+  const partial = medications.filter((m) => {
+    const full = normalizeText(m.name);
+    return (
+      full.includes(cleanTarget) ||
+      cleanTarget.includes(full) ||
+      (baseTarget && (full.includes(baseTarget) || baseTarget.includes(full)))
+    );
+  });
+  return partial;
+}
+
+function parseAppointmentFromText(messageText: string): {
+  title: string;
+  type: string;
+  date: string;
+  time: string;
+  veterinarian?: string;
+  location?: string;
+  notes: string;
+} | null {
+  const clean = normalizeText(messageText);
+  const hasScheduleVerb =
+    /\b(?:agend(?:a|e|ar)|marc(?:a|e|ar)|registr(?:a|e|ar)\s+(?:um[oa]?\s+)?(?:consulta|exame|retorno|banho|tosa|cirurgia|compromisso))\b/.test(
+      clean
+    );
+  const hasApptEntity =
+    /\b(?:consulta|exame|retorno|banho|tosa|cirurgia|compromisso|checkup|veterinari[oa]|vacina)\b/.test(
+      clean
+    );
+
+  if (!hasScheduleVerb || !hasApptEntity || clean.includes("?")) return null;
+
+  let type = "consulta";
+  if (/\bretorno\b/.test(clean)) type = "retorno";
+  else if (/\b(?:exame|hemograma|ultrassom|raio|sangue|checkup)\b/.test(clean)) type = "exame";
+  else if (/\b(?:banho|tosa)\b/.test(clean)) type = "banho_tosa";
+  else if (/\bcirurgia\b/.test(clean)) type = "cirurgia";
+  else if (/\bvacina\b/.test(clean)) type = "vacinacao";
+
+  const today = new Date();
+  let date = format(today, "yyyy-MM-dd");
+  if (/\bamanha\b/.test(clean)) {
+    date = format(addDays(today, 1), "yyyy-MM-dd");
+  } else if (/\bdepois\s+de\s+amanha\b/.test(clean)) {
+    date = format(addDays(today, 2), "yyyy-MM-dd");
+  } else {
+    const parsedIso = parseBrOrIsoDateToIso(messageText);
+    if (parsedIso) {
+      date = parsedIso;
+    } else {
+      const dmOnly = messageText.match(/\b(?:dia\s+)?(\d{1,2})\/(\d{1,2})\b/);
+      if (dmOnly) {
+        date = `${today.getFullYear()}-${dmOnly[2].padStart(2, "0")}-${dmOnly[1].padStart(2, "0")}`;
+      }
+    }
+  }
+
+  let time = "09:00";
+  const withoutDates = messageText.replace(/\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/g, " ");
+  const timeMatch = withoutDates.match(/(?:[àa]s?\s*|\b)(\d{1,2})\s*(?:h\s*(\d{2})?|:(\d{2}))/i);
+  if (timeMatch) {
+    const h = Math.min(23, parseInt(timeMatch[1], 10)).toString().padStart(2, "0");
+    const m = (timeMatch[2] || timeMatch[3] || "00").padStart(2, "0");
+    time = `${h}:${m}`;
+  }
+
+  const vetMatch = messageText.match(
+    /\b(?:com\s+(?:o|a)\s+)?(?:dr\.?|dra\.?|vet\.?|veterin[aá]ri[oa])\s+([A-Za-zÀ-ú\s]{2,25}?)(?=\s*(?:na\b|no\b|em\b|dia\b|,|\.|$))/i
+  );
+  const locationMatch = messageText.match(
+    /\b(?:na|no|em)\s+((?:cl[ií]nica|hospital|pet\s*shop|consult[oó]rio)\s+[A-Za-zÀ-ú0-9\s.&'-]{2,30}|[A-ZÀ-Ú][A-Za-zÀ-ú0-9\s.&'-]{2,25})(?=\s*(?:com\b|dia\b|[àa]s\b|,|\.|$))/i
+  );
+
+  let title = messageText
+    .replace(/^(?:agend(?:a|e|ar)|marc(?:a|e|ar)|registr(?:a|e|ar))\s+(?:um[oa]?\s+)?/i, "")
+    .replace(/\b(?:para\s+o|para\s+a|pro|pra)\s+[A-Za-zÀ-ú0-9\s-]+$/i, "")
+    .replace(/\b(?:hoje|amanh[ãa]|depois\s+de\s+amanh[ãa]|(?:no\s+)?dia\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{4}-\d{2}-\d{2})\b/gi, " ")
+    .replace(/\b(?:[àa]s?\s*\d{1,2}\s*(?:h\s*\d{0,2}|:\d{2}))\b/gi, " ")
+    .replace(/\bcom\s+(?:o|a)?\s*(?:dr\.?|dra\.?|vet\.?|veterin[aá]ri[oa])\s+[A-Za-zÀ-ú\s]{2,25}/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[,:.\s-]+|[,:.\s-]+$/g, "")
+    .trim();
+
+  if (!title || title.length < 3) {
+    title =
+      type === "exame"
+        ? "Exame Veterinário"
+        : type === "retorno"
+        ? "Retorno Veterinário"
+        : type === "banho_tosa"
+        ? "Banho e Tosa"
+        : "Consulta Veterinária";
+  }
+
+  return {
+    title: title.charAt(0).toUpperCase() + title.slice(1),
+    type,
+    date,
+    time,
+    veterinarian: vetMatch?.[1]?.trim(),
+    location: locationMatch?.[1]?.trim(),
+    notes: `Agendado via WhatsApp: "${messageText.trim()}"`,
+  };
+}
+
 function parseInventoryItemCreationFromText(
   messageText: string,
   petNames: string[] = []
@@ -715,19 +1061,52 @@ function parseInventoryItemCreationFromText(
     clean.includes("?") ||
     clean.includes("vacina") ||
     clean.includes("remedio") ||
-    clean.includes("medicamento")
+    clean.includes("medicamento") ||
+    clean.includes("lista de compras")
   ) {
+    return null;
+  }
+
+  const explicitStockCategory =
+    /\b(?:racao|comida|alimento|petisco|biscoito|ossinho|sache|snack|areia|tapete|shampoo|higiene|item|produto|no\s+estoque|em\s+estoque)\b/.test(
+      clean
+    );
+  if (!explicitStockCategory) {
+    return null;
+  }
+
+  // Se mencionar animal/pet/espécie sem palavra explícita de produto alimentar/higiene, não é item de estoque
+  const hasSupplyNoun = /\b(?:racao|petisco|biscoito|ossinho|sache|areia|tapete|shampoo|item)\b/.test(clean);
+  if (hasPetProfileOrSpeciesIndicator(clean) && !hasSupplyNoun) {
     return null;
   }
 
   const createMatch = messageText
     .trim()
     .match(
-      /^(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir)\s+(?:a\s+|o\s+|um\s+|uma\s+)?(?:ra[çc][ãa]o\s+|item\s+|comida\s+|petisco\s+)?(.+)$/i
+      /^(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir)\s+(?:a\s+|o\s+|um\s+|uma\s+)?(ra[çc][ãa]o|item|produto|comida|alimento|petisco|biscoito|ossinho|sach[eê]|snack|areia|tapete|shampoo)\s+(.+)$/i
     );
-  if (!createMatch?.[1]) return null;
+  const stockLocationMatch =
+    !createMatch
+      ? messageText
+          .trim()
+          .match(
+            /^(?:cadastre|cadastra|cadastrar|adiciona|adicionar|inclui|incluir)\s+(?:a\s+|o\s+|um\s+|uma\s+)?(.+?)\s+(?:no|em)\s+estoque\b(.*)$/i
+          )
+      : null;
 
-  let itemPart = stripPetReferences(createMatch[1], petNames)
+  if (!createMatch?.[2] && !stockLocationMatch?.[1]) return null;
+
+  const prefixVerbNoun = createMatch?.[1] ? normalizeText(createMatch[1]) : "";
+  const keepNounPrefix =
+    prefixVerbNoun &&
+    !["racao", "comida", "alimento", "item", "produto"].includes(prefixVerbNoun);
+
+  const rawBody = createMatch?.[2]
+    ? `${keepNounPrefix ? `${createMatch[1]} ` : ""}${createMatch[2]}`.trim()
+    : stockLocationMatch![1].trim();
+
+  let itemPart = stripPetReferences(rawBody, petNames)
     .replace(/\s+(?:no\s+estoque|em\s+estoque|no\s+petrec)\b.*$/i, "")
     .trim();
 
@@ -761,16 +1140,23 @@ function parseInventoryItemCreationFromText(
 
   const cleanName = normalizeText(itemPart);
   const category =
+    clean.includes("petisco") ||
     cleanName.includes("petisco") ||
     cleanName.includes("biscoito") ||
     cleanName.includes("ossinho") ||
     cleanName.includes("snack")
       ? "petisco"
-      : cleanName.includes("tapete") ||
+      : clean.includes("higiene") ||
+        cleanName.includes("tapete") ||
         cleanName.includes("areia") ||
         cleanName.includes("shampoo")
       ? "higiene"
-      : "racao";
+      : clean.includes("racao") ||
+        clean.includes("comida") ||
+        clean.includes("alimento") ||
+        cleanName.includes("racao")
+      ? "racao"
+      : "outro";
 
   if (category !== "racao" && !qtyMatch) {
     unit = "unidades";
@@ -965,7 +1351,7 @@ const ASSISTANT_TOOLS = [
     type: "function" as const,
     name: "record_purchase",
     description:
-      "Registra compra ou reposição de estoque de ração, medicamento ou outro item (ex: 'comprei 15kg de ração', 'chegou caixa com 30 comprimidos').",
+      "Registra compra ou reposição de estoque de ração, medicamento ou outro item, com suporte opcional a valor total e loja/fornecedor (ex: 'comprei 15kg de ração por R$ 250 na Cobasi').",
     parameters: {
       type: "object",
       properties: {
@@ -980,6 +1366,18 @@ const ASSISTANT_TOOLS = [
         unit: {
           type: "string",
           description: "Unidade mencionada pelo tutor (ex: 'kg', 'g', 'comprimidos', 'unidades', 'ml').",
+        },
+        totalPrice: {
+          type: "number",
+          description: "Valor total pago em reais (opcional, ex: 250).",
+        },
+        unitPrice: {
+          type: "number",
+          description: "Valor unitário pago em reais (opcional).",
+        },
+        supplier: {
+          type: "string",
+          description: "Loja, clínica ou fornecedor onde comprou (opcional, ex: 'Cobasi', 'Petz').",
         },
         notes: {
           type: "string",
@@ -1176,6 +1574,276 @@ const ASSISTANT_TOOLS = [
   },
   {
     type: "function" as const,
+    name: "create_pet",
+    description:
+      "Cadastra um novo pet/animal na conta do tutor (ex: 'Cadastre o Serelepe, meu saruê de estimação', 'Adotei um gato chamado Tom de 4kg').",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Nome do pet." },
+        species: {
+          type: "string",
+          description: "Espécie do animal (ex: 'Cão', 'Gato', 'Ave', 'Roedor', 'Saruê', 'Réptil', 'Furão').",
+        },
+        breed: { type: "string", description: "Raça (opcional, ex: 'SRD')." },
+        sex: { type: "string", description: "'Macho' ou 'Fêmea' (opcional)." },
+        weightKg: { type: "number", description: "Peso inicial em kg (opcional)." },
+        birthDate: { type: "string", description: "Data de nascimento em YYYY-MM-DD (opcional)." },
+        notes: { type: "string", description: "Observações iniciais sobre o pet." },
+      },
+      required: ["name", "species"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "update_pet",
+    description:
+      "Atualiza dados cadastrais do pet (nome, espécie, raça, sexo, nascimento, microchip, cor, observações) ou alterna o modo de rotina ('manual' ou 'automatic_by_exception').",
+    parameters: {
+      type: "object",
+      properties: {
+        petName: { type: "string", description: "Nome do pet se diferente do atual em foco." },
+        newName: { type: "string", description: "Novo nome do pet." },
+        species: { type: "string", description: "Nova espécie." },
+        breed: { type: "string", description: "Raça atualizada." },
+        sex: { type: "string", description: "'Macho' ou 'Fêmea'." },
+        birthDate: { type: "string", description: "Data de nascimento YYYY-MM-DD." },
+        microchip: { type: "string", description: "Número de microchip." },
+        color: { type: "string", description: "Pelagem / cor." },
+        notes: { type: "string", description: "Observações do perfil." },
+        routineMode: {
+          type: "string",
+          enum: ["manual", "automatic_by_exception"],
+          description: "Define modo de controle de rotina: 'manual' ou 'automatic_by_exception'.",
+        },
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    name: "delete_pet",
+    description: "Exclui permanentemente um pet cadastrado na conta do tutor.",
+    parameters: {
+      type: "object",
+      properties: {
+        petName: { type: "string", description: "Nome exato ou aproximado do pet a excluir." },
+      },
+      required: ["petName"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "list_pets",
+    description: "Lista todos os pets vinculados ao tutor, indicando o pet em foco, peso, espécie e código de compartilhamento.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function" as const,
+    name: "list_medications",
+    description: "Lista a ficha completa de todos os medicamentos cadastrados para o pet, com posologia, horários, instruções e saldo em estoque.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function" as const,
+    name: "update_medication",
+    description: "Edita horários, dosagem, quantidade por dose, nome, instruções ou estoque de um medicamento já cadastrado.",
+    parameters: {
+      type: "object",
+      properties: {
+        medicationName: { type: "string", description: "Nome do medicamento existente." },
+        newName: { type: "string", description: "Novo nome (opcional)." },
+        dosage: { type: "string", description: "Nova dosagem/concentração (opcional)." },
+        unit: { type: "string", description: "Unidade posológica (opcional)." },
+        times: {
+          type: "array",
+          items: { type: "string" },
+          description: "Novos horários diários HH:mm (opcional).",
+        },
+        quantityPerAdministration: { type: "number", description: "Dose por administração (opcional)." },
+        currentQuantity: { type: "number", description: "Novo saldo em estoque (opcional)." },
+        instructions: { type: "string", description: "Novas instruções de uso (opcional)." },
+        veterinarian: { type: "string", description: "Veterinário prescritor (opcional)." },
+      },
+      required: ["medicationName"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "delete_medication",
+    description: "Exclui ou suspende permanentemente um medicamento do pet (removendo cronograma e estoque vinculado).",
+    parameters: {
+      type: "object",
+      properties: {
+        medicationName: { type: "string", description: "Nome do medicamento a remover." },
+      },
+      required: ["medicationName"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "delete_inventory_item",
+    description: "Remove um item cadastrado no estoque (ração, petisco, higiene ou medicamento vinculado).",
+    parameters: {
+      type: "object",
+      properties: {
+        itemName: { type: "string", description: "Nome do item a excluir do estoque." },
+      },
+      required: ["itemName"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "update_inventory_lead_time",
+    description: "Altera a antecedência em dias para alertas de recompra de um item do estoque.",
+    parameters: {
+      type: "object",
+      properties: {
+        itemName: { type: "string", description: "Nome do item no estoque." },
+        purchaseLeadTimeDays: { type: "number", description: "Quantidade de dias de antecedência para aviso." },
+      },
+      required: ["itemName", "purchaseLeadTimeDays"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "add_shopping_list_item",
+    description: "Adiciona manualmente um item na lista de compras compartilhada do pet.",
+    parameters: {
+      type: "object",
+      properties: {
+        itemName: { type: "string", description: "Nome do item a adicionar (ex: 'Coleira antipulgas')." },
+        quantity: { type: "number", description: "Quantidade sugerida (padrão 1)." },
+        unit: { type: "string", description: "Unidade (padrão 'un')." },
+      },
+      required: ["itemName"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "toggle_shopping_list_item",
+    description: "Marca ou desmarca um item da lista de compras como comprado/pendente.",
+    parameters: {
+      type: "object",
+      properties: {
+        itemName: { type: "string", description: "Nome do item na lista de compras." },
+        isPurchased: { type: "boolean", description: "true para marcar como comprado, false para pendente." },
+      },
+      required: ["itemName"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "list_purchases",
+    description: "Lista o histórico financeiro de compras registradas para o pet (valores em R$, datas e fornecedores).",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function" as const,
+    name: "record_appointment",
+    description: "Agenda uma consulta, exame, retorno, cirurgia ou banho/tosa para o pet.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título do compromisso (ex: 'Consulta dermatológica')." },
+        type: {
+          type: "string",
+          description: "'consulta', 'exame', 'retorno', 'vacinacao', 'banho_tosa' ou 'cirurgia'.",
+        },
+        date: { type: "string", description: "Data em YYYY-MM-DD." },
+        time: { type: "string", description: "Horário HH:mm." },
+        veterinarian: { type: "string", description: "Nome do veterinário (opcional)." },
+        location: { type: "string", description: "Clínica ou endereço (opcional)." },
+        notes: { type: "string", description: "Observações adicionais (opcional)." },
+      },
+      required: ["title", "date", "time"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "list_appointments",
+    description: "Lista os próximos compromissos, consultas e exames agendados para o pet.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function" as const,
+    name: "review_prescription",
+    description: "Aprova ou recusa uma prescrição veterinária pendente de aprovação do tutor.",
+    parameters: {
+      type: "object",
+      properties: {
+        medicationName: { type: "string", description: "Nome do medicamento prescrito (opcional se houver só 1)." },
+        action: { type: "string", enum: ["approve", "reject"], description: "'approve' ou 'reject'." },
+        initialStockQuantity: { type: "number", description: "Estoque inicial ao aprovar (padrão 10)." },
+        notes: { type: "string", description: "Justificativa opcional ao recusar." },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "manage_health_record",
+    description:
+      "Edita ou exclui um registro no prontuário/saúde do pet (nota clínica, pesagem, vacina ou compromisso).",
+    parameters: {
+      type: "object",
+      properties: {
+        recordType: {
+          type: "string",
+          enum: ["clinical_note", "weight", "vaccine", "appointment"],
+          description: "Tipo de registro.",
+        },
+        action: { type: "string", enum: ["edit", "delete"], description: "'edit' ou 'delete'." },
+        targetHint: { type: "string", description: "Nome da vacina, título do compromisso ou trecho da nota (opcional)." },
+        newContent: { type: "string", description: "Novo texto para nota clínica." },
+        newWeightKg: { type: "number", description: "Novo peso em kg." },
+        newTitle: { type: "string", description: "Novo título/nome para vacina ou compromisso." },
+        newDate: { type: "string", description: "Nova data YYYY-MM-DD." },
+        newTime: { type: "string", description: "Novo horário HH:mm." },
+        newNextDueDate: { type: "string", description: "Nova data de reforço da vacina YYYY-MM-DD." },
+      },
+      required: ["recordType", "action"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "get_pet_share_code_or_invite",
+    description:
+      "Retorna o código permanente de compartilhamento do pet (PET-XXXXXX) ou gera um novo código/link de convite (CONV-XXXXXX) para outro tutor/veterinário.",
+    parameters: {
+      type: "object",
+      properties: {
+        createInvite: { type: "boolean", description: "true para gerar um convite nominal CONV-XXXXXX." },
+        invitedName: { type: "string", description: "Nome da pessoa convidada (opcional)." },
+        invitedEmail: { type: "string", description: "E-mail do convidado (opcional)." },
+        invitedPhone: { type: "string", description: "WhatsApp/telefone do convidado (opcional)." },
+        role: {
+          type: "string",
+          description: "Papel: 'caregiver' (tutor familiar), 'vet_limited' (veterinário), 'caregiver_pro' (cuidador) ou 'viewer'.",
+        },
+        accessDays: { type: "number", description: "Dias de validade para profissionais (opcional, ex: 30)." },
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    name: "list_pet_members",
+    description: "Lista todos os tutores e profissionais vinculados ao pet atual e status das notificações.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function" as const,
+    name: "toggle_whatsapp_notifications",
+    description: "Silencia ou reativa o recebimento de notificações de atividades de outros tutores deste pet no WhatsApp.",
+    parameters: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "true para ativar, false para silenciar." },
+      },
+      required: ["enabled"],
+    },
+  },
+  {
+    type: "function" as const,
     name: "answer_question",
     description:
       "Responde perguntas informativas do tutor com base nos dados atuais do pet (previsão de término da ração, status de remédios de hoje, peso, vacinas, lista de compras).",
@@ -1193,7 +1861,14 @@ const ASSISTANT_TOOLS = [
 ];
 
 function buildSystemInstruction(snapshot: PetContextSnapshot): string {
-  const { pet, inventory, administrationsToday, health, shoppingList } = snapshot;
+  const { pet, allPets, inventory, administrationsToday, medications, health, shoppingList } = snapshot;
+
+  const petsListSummary =
+    allPets.length === 0
+      ? "Nenhum pet."
+      : allPets
+          .map((p: any) => `- ${p.name} (${p.species}, código: ${p.shareCode || `PET-${String(p._id).slice(-6).toUpperCase()}`})${String(p._id) === String(pet._id) ? " [EM FOCO]" : ""}`)
+          .join("\n");
 
   const inventorySummary =
     inventory.length === 0
@@ -1208,6 +1883,18 @@ function buildSystemInstruction(snapshot: PetContextSnapshot): string {
                 ? "sob demanda"
                 : `${Math.round(item.forecast.daysRemaining)} dias`;
             return `- ${item.name} (cat: ${item.category}): ${item.currentQuantity} ${item.unit}, consumo diário: ${item.dailyConsumption} ${item.unit}/dia, dura aprox: ${days}, término estimado: ${endStr}, status: ${item.forecast.status}`;
+          })
+          .join("\n");
+
+  const allMedsSummary =
+    medications.length === 0
+      ? "Nenhum medicamento cadastrado."
+      : medications
+          .map((m: any) => {
+            const times = Array.isArray(m.schedules?.[0]?.times)
+              ? m.schedules[0].times.join(", ")
+              : "";
+            return `- ${m.name}${m.dosage ? ` (${m.dosage})` : ""} | horários: ${times || "não informado"} | status: ${m.status}`;
           })
           .join("\n");
 
@@ -1229,6 +1916,13 @@ function buildSystemInstruction(snapshot: PetContextSnapshot): string {
           .map((v) => `- ${v.name} (aplicada: ${v.applicationDate || "?"}, reforço: ${v.nextDueDate || "não informado"})`)
           .join("\n");
 
+  const apptsSummary =
+    health.appointments.length === 0
+      ? "Nenhum compromisso agendado."
+      : health.appointments
+          .map((a) => `- ${a.title} (${a.type}) em ${a.date} às ${a.time}${a.veterinarian ? ` com ${a.veterinarian}` : ""}`)
+          .join("\n");
+
   const pendingShop = shoppingList
     .filter((s) => !s.isPurchased)
     .map((s) => `- ${s.customName || s.inventoryItem?.name || "Item"} (${s.quantity || 1} ${s.unit || "un"})`)
@@ -1239,21 +1933,23 @@ function buildSystemInstruction(snapshot: PetContextSnapshot): string {
     `Hoje é ${format(new Date(), "yyyy-MM-dd")}.\n` +
     `Modo de rotina atual do pet: ${pet.routineMode === "manual" ? "MANUAL (confirmação pontual)" : "POR EXCEÇÃO (rações e remédios são debitados automaticamente; o tutor avisa quando NÃO deu ou quando há exceções)"}.\n` +
     `Peso atual registrado: ${pet.weight ? `${pet.weight} kg` : "Não informado"}.\n\n` +
+    `PETS DO TUTOR:\n${petsListSummary}\n\n` +
+    `MEDICAMENTOS CADASTRADOS:\n${allMedsSummary}\n\n` +
     `ESTOQUE ATUAL:\n${inventorySummary}\n\n` +
     `MEDICAMENTOS DE HOJE:\n${medsSummary}\n\n` +
     `VACINAS:\n${vaccinesSummary}\n\n` +
+    `COMPROMISSOS / CONSULTAS:\n${apptsSummary}\n\n` +
     `LISTA DE COMPRAS PENDENTE:\n${pendingShop || "Vazia"}\n\n` +
     `REGRAS IMPORTANTES:\n` +
     `1. Sempre use as ferramentas (function calls) para registrar ações reais ou responder perguntas usando os dados acima.\n` +
-    `2. Se o tutor mencionar que o pet deixou comida/não comeu parte ou toda a refeição (ex: "deixou metade do pote", "não quis jantar", "jejum"), chame 'record_feeding_exception'. Assuma 2 refeições/dia caso o consumo diário esteja cadastrado e o tutor dê uma fração (metade de 1 refeição = fractionOfMealNotConsumed: 0.5; refeição inteira = 1; dia todo = 2).\n` +
-    `3. Se o tutor informar que NÃO deu um remédio, o pet cuspiu, vomitou o remédio ou pulou um horário, chame 'update_medication_dose' com status 'skipped' e informe medicationName/scheduledTimeHint.\n` +
-    `4. Se o tutor disser que comprou ou chegou algo (ração, comprimidos, etc.), chame 'record_purchase'.\n` +
-    `5. Se o tutor informar ou alterar quanto o pet come por dia (ex: "o consumo diário é 240g", "come 300g por dia"), chame 'update_daily_consumption'.\n` +
-    `6. Se o tutor informou quanto sobrou fisicamente após pesar ou contar (ex: "pesei o balde e tem 4,2kg"), chame 'adjust_stock'.\n` +
-    `7. Se o tutor informar medicamentos que o pet toma ou enviar foto/áudio de receita veterinária (ex: "Gengibre toma Sepurim 20mg e Retenic 5mg", "receitou Apoquel"), chame 'create_medication' UMA VEZ para cada medicamento mencionado. Se for carteira de vacinação ou vacina aplicada, chame 'record_vaccine'. Se pedir para cadastrar uma nova ração/item sem quantidade (ex: "Cadastre Fresh Meat"), chame 'create_inventory_item'.\n` +
-    `8. Se o tutor relatar sintomas ou observações clínicas (ex: diarreia, coceira, mancar), chame 'record_clinical_note'.\n` +
-    `9. Se a mensagem ou áudio contiver múltiplas ações (ex: jejum e compra), você pode chamar mais de uma ferramenta.\n` +
-    `10. Responda em português brasileiro claro, conciso e amigável para WhatsApp.`
+    `2. Se o tutor pedir para cadastrar um NOVO PET / ANIMAL (ex: "Cadastre o Serelepe, meu saruê de estimação", "Adotei uma gata chamada Luna"), chame 'create_pet' — NUNCA confunda cadastro de animal com remédio ou item de estoque!\n` +
+    `3. Para editar perfil/modo de rotina do pet chame 'update_pet'; para listar todos os pets chame 'list_pets'; para excluir um pet chame 'delete_pet'.\n` +
+    `4. Se deixar comida/jejum -> 'record_feeding_exception'. Se comer ração manual -> 'record_feeding_consumption'.\n` +
+    `5. Se pular/cuspir/administrar dose hoje -> 'update_medication_dose'. Para cadastrar receita/remédio -> 'create_medication'. Para editar horário/dose/instruções -> 'update_medication'. Para excluir/parar medicamento -> 'delete_medication'. Para listar ficha de remédios -> 'list_medications'.\n` +
+    `6. Para compra/reposição (inclusive com preço R$ e loja) -> 'record_purchase'. Para histórico/gastos -> 'list_purchases'. Para lista de compras -> 'add_shopping_list_item' ou 'toggle_shopping_list_item'. Para ajuste físico -> 'adjust_stock'. Para alterar consumo diário -> 'update_daily_consumption'. Para alterar antecedência de alerta -> 'update_inventory_lead_time'. Para excluir item do estoque -> 'delete_inventory_item'.\n` +
+    `7. Para vacina -> 'record_vaccine'. Para consulta/exame -> 'record_appointment' ou 'list_appointments'. Para nota clínica/sintoma -> 'record_clinical_note'. Para aprovar/recusar prescrição veterinária -> 'review_prescription'. Para editar/excluir nota, peso, vacina ou compromisso -> 'manage_health_record'.\n` +
+    `8. Para código de compartilhamento/convite -> 'get_pet_share_code_or_invite'. Para ver tutores -> 'list_pet_members'. Para silenciar/ativar notificações no WhatsApp -> 'toggle_whatsapp_notifications'.\n` +
+    `9. Responda em português brasileiro claro, conciso e amigável para WhatsApp.`
   );
 }
 
@@ -1323,9 +2019,11 @@ export async function executeAssistantToolCall(params: {
   actionTaken?: string;
   nextState?: string;
   pendingActionPayload?: string;
+  newActivePetId?: string;
 }> {
   const { convex, toolName, args, snapshot, userId } = params;
-  const { pet, inventory, administrationsToday, shoppingList } = snapshot;
+  const { pet, allPets, inventory, administrationsToday, medications, health, shoppingList } =
+    snapshot;
 
   switch (toolName) {
     case "record_feeding_exception": {
@@ -1542,35 +2240,84 @@ export async function executeAssistantToolCall(params: {
       if ("disambiguation" in resolved) return resolved.disambiguation;
       const existing = "item" in resolved ? resolved.item : undefined;
 
+      const hasFinance =
+        (typeof args.totalPrice === "number" && args.totalPrice > 0) ||
+        (typeof args.unitPrice === "number" && args.unitPrice > 0) ||
+        Boolean(args.supplier);
+
       if (existing) {
         const convertedQty = convertQuantityForTargetUnit(rawQty, args.unit, existing.unit);
-        await convex.mutation(api.inventory.recordPurchase, {
-          petId: pet._id,
-          userId,
-          inventoryItemId: existing._id,
-          quantity: convertedQty,
-          notes: args.notes || "Compra registrada via WhatsApp",
-        });
+        const computedTotal =
+          typeof args.totalPrice === "number" && args.totalPrice > 0
+            ? args.totalPrice
+            : (Number(args.unitPrice) || 0) * convertedQty;
+        const computedUnitPrice =
+          typeof args.unitPrice === "number" && args.unitPrice > 0
+            ? args.unitPrice
+            : convertedQty > 0
+            ? computedTotal / convertedQty
+            : 0;
 
-        // Se estava na lista de compras pendente, marca automaticamente como comprado
-        for (const s of shoppingList) {
-          if (!s.isPurchased && s.inventoryItemId === existing._id) {
-            await convex.mutation(api.inventory.toggleShoppingItem, {
-              id: s._id,
-              isPurchased: true,
-              userId,
-            });
+        if (hasFinance) {
+          const forecast = calculateStockForecast({
+            currentQuantity: existing.currentQuantity + convertedQty,
+            dailyConsumption: existing.dailyConsumption,
+            unit: existing.unit,
+            purchaseLeadTimeDays: existing.purchaseLeadTimeDays,
+          });
+          await convex.mutation(api.inventory.recordPurchaseFull, {
+            petId: pet._id,
+            userId,
+            supplier: args.supplier || "Loja Pet",
+            total: computedTotal,
+            notes: args.notes || "Compra registrada via WhatsApp",
+            items: [
+              {
+                inventoryItemId: existing._id,
+                quantity: convertedQty,
+                unitPrice: computedUnitPrice,
+                status: forecast.status,
+                estimatedEndDate: forecast.estimatedEndDate
+                  ? forecast.estimatedEndDate.toISOString()
+                  : undefined,
+              },
+            ],
+          });
+        } else {
+          await convex.mutation(api.inventory.recordPurchase, {
+            petId: pet._id,
+            userId,
+            inventoryItemId: existing._id,
+            quantity: convertedQty,
+            notes: args.notes || "Compra registrada via WhatsApp",
+          });
+
+          // Se estava na lista de compras pendente, marca automaticamente como comprado
+          for (const s of shoppingList) {
+            if (!s.isPurchased && s.inventoryItemId === existing._id) {
+              await convex.mutation(api.inventory.toggleShoppingItem, {
+                id: s._id,
+                isPurchased: true,
+                userId,
+              });
+            }
           }
         }
 
         const newTotal = existing.currentQuantity + convertedQty;
         const unitLabel = args.unit && convertedQty !== rawQty ? ` (${rawQty} ${args.unit})` : "";
+        const financeLine = hasFinance
+          ? `\n💰 Valor: *R$ ${computedTotal.toFixed(2).replace(".", ",")}*${
+              args.supplier ? ` (${args.supplier})` : ""
+            }`
+          : "";
 
         return {
           replyText:
             `🛒 *Compra Registrada no Estoque!*\n\n` +
             `Adicionados *+${convertedQty} ${existing.unit}*${unitLabel} em *${existing.name}* para *${pet.name}*.\n` +
-            `📦 Novo saldo: *${newTotal} ${existing.unit}*.`,
+            `📦 Novo saldo: *${newTotal} ${existing.unit}*.` +
+            financeLine,
           actionTaken: "purchase_recorded",
         };
       }
@@ -1581,10 +2328,62 @@ export async function executeAssistantToolCall(params: {
           ? "g"
           : args.unit || (inferredCategory === "racao" ? "g" : "unidades");
       const finalQty = convertQuantityForTargetUnit(rawQty, args.unit, targetUnit);
+      const formattedName = itemNameInput.charAt(0).toUpperCase() + itemNameInput.slice(1);
+
+      if (hasFinance) {
+        const computedTotal =
+          typeof args.totalPrice === "number" && args.totalPrice > 0
+            ? args.totalPrice
+            : (Number(args.unitPrice) || 0) * finalQty;
+        const computedUnitPrice =
+          typeof args.unitPrice === "number" && args.unitPrice > 0
+            ? args.unitPrice
+            : finalQty > 0
+            ? computedTotal / finalQty
+            : 0;
+
+        const newItemId = await convex.mutation(api.inventory.createItem, {
+          petId: pet._id,
+          name: formattedName,
+          category: inferredCategory || "outro",
+          unit: targetUnit,
+          currentQuantity: 0,
+          dailyConsumption: 0,
+          purchaseLeadTimeDays: 7,
+          notes: args.notes || "Cadastrado via compra no WhatsApp",
+          userId,
+        });
+
+        await convex.mutation(api.inventory.recordPurchaseFull, {
+          petId: pet._id,
+          userId,
+          supplier: args.supplier || "Loja Pet",
+          total: computedTotal,
+          notes: args.notes || "Compra registrada via WhatsApp",
+          items: [
+            {
+              inventoryItemId: newItemId,
+              quantity: finalQty,
+              unitPrice: computedUnitPrice,
+              status: "OK",
+            },
+          ],
+        });
+
+        return {
+          replyText:
+            `🛒 *Novo Item & Compra Registrados!*\n\n` +
+            `*${formattedName}* cadastrado para *${pet.name}* com *${finalQty} ${targetUnit}* disponíveis.\n` +
+            `💰 Valor: *R$ ${computedTotal.toFixed(2).replace(".", ",")}*${
+              args.supplier ? ` (${args.supplier})` : ""
+            }`,
+          actionTaken: "purchase_recorded",
+        };
+      }
 
       await convex.mutation(api.inventory.createItem, {
         petId: pet._id,
-        name: itemNameInput.charAt(0).toUpperCase() + itemNameInput.slice(1),
+        name: formattedName,
         category: inferredCategory || "outro",
         unit: targetUnit,
         currentQuantity: finalQty,
@@ -1597,7 +2396,7 @@ export async function executeAssistantToolCall(params: {
       return {
         replyText:
           `🛒 *Novo Item Adicionado ao Estoque!*\n\n` +
-          `*${itemNameInput}* cadastrado para *${pet.name}* com *${finalQty} ${targetUnit}* disponíveis.`,
+          `*${formattedName}* cadastrado para *${pet.name}* com *${finalQty} ${targetUnit}* disponíveis.`,
         actionTaken: "purchase_recorded",
       };
     }
@@ -1944,6 +2743,795 @@ export async function executeAssistantToolCall(params: {
       };
     }
 
+    case "create_pet": {
+      const petName = (args.name || "").trim();
+      const species = (args.species || "Cão").trim();
+      if (!petName || petName.length < 2) {
+        return { replyText: "⚠️ Informe um nome válido para cadastrar o pet." };
+      }
+
+      const duplicate = allPets.find(
+        (p: any) => normalizeText(p.name) === normalizeText(petName)
+      );
+      if (duplicate) {
+        return {
+          replyText: `ℹ️ Já existe um pet chamado *${duplicate.name}* (${duplicate.species}) na sua conta.`,
+          actionTaken: "pet_already_exists",
+        };
+      }
+
+      const weightVal =
+        typeof args.weightKg === "number" && args.weightKg > 0 && args.weightKg < 200
+          ? args.weightKg
+          : undefined;
+
+      const created = await convex.mutation(api.pets.create, {
+        userId,
+        name: petName.charAt(0).toUpperCase() + petName.slice(1),
+        species,
+        breed: args.breed?.trim() || undefined,
+        sex: args.sex?.trim() || undefined,
+        birthDate: args.birthDate?.trim() || undefined,
+        weight: weightVal,
+        photo: getDefaultPetPhoto(species),
+        notes: args.notes?.trim() || undefined,
+        routineMode: "automatic_by_exception",
+      });
+
+      if (created?._id) {
+        snapshot.allPets.push(created);
+        await convex.mutation(api.whatsapp.updateSession, {
+          userId,
+          currentPetId: created._id,
+          state: "IDLE",
+        });
+      }
+
+      const shareCode =
+        created?.shareCode ||
+        (created?._id ? `PET-${String(created._id).slice(-6).toUpperCase()}` : "");
+
+      return {
+        replyText:
+          `🎉 *Novo Pet Cadastrado!*\n\n` +
+          `🐾 *${created?.name || petName}* (${species}` +
+          `${args.breed ? ` • ${args.breed}` : ""}` +
+          `${args.sex ? ` • ${args.sex}` : ""}` +
+          `${weightVal ? ` • ${weightVal} kg` : ""})\n` +
+          `${shareCode ? `🔑 Código de compartilhamento: \`${shareCode}\`\n` : ""}` +
+          `\n🔄 Foco da conversa alternado automaticamente para *${created?.name || petName}*!`,
+        actionTaken: "pet_created",
+        newActivePetId: created?._id ? String(created._id) : undefined,
+      };
+    }
+
+    case "update_pet": {
+      const targetPet =
+        (args.petName
+          ? allPets.find((p: any) => normalizeText(p.name) === normalizeText(args.petName))
+          : null) || pet;
+
+      if (args.routineMode === "manual" || args.routineMode === "automatic_by_exception") {
+        await convex.mutation(api.pets.setRoutineMode, {
+          petId: targetPet._id,
+          routineMode: args.routineMode,
+          userId,
+        });
+        targetPet.routineMode = args.routineMode;
+
+        const hasProfileChanges = Boolean(
+          args.newName ||
+            args.species ||
+            args.breed ||
+            args.sex ||
+            args.birthDate ||
+            args.microchip ||
+            args.color ||
+            args.notes
+        );
+
+        if (!hasProfileChanges) {
+          return {
+            replyText:
+              args.routineMode === "automatic_by_exception"
+                ? `🔄 *Modo por Exceção Ativado para ${targetPet.name}!*\n\nRações e remédios passam a ser baixados automaticamente conforme a rotina configurada.`
+                : `✍️ *Modo Manual Ativado para ${targetPet.name}!*\n\nRações e doses serão baixadas apenas quando você confirmar.`,
+            actionTaken: "routine_mode_updated",
+          };
+        }
+      }
+
+      const nextName = args.newName?.trim() || targetPet.name;
+      const nextSpecies = args.species?.trim() || targetPet.species;
+      const updated = await convex.mutation(api.pets.update, {
+        petId: targetPet._id,
+        name: nextName,
+        species: nextSpecies,
+        breed: args.breed !== undefined ? args.breed?.trim() || undefined : targetPet.breed,
+        sex: args.sex !== undefined ? args.sex?.trim() || undefined : targetPet.sex,
+        birthDate: args.birthDate !== undefined ? args.birthDate?.trim() || undefined : targetPet.birthDate,
+        weight: targetPet.weight,
+        photo: targetPet.photo,
+        color: args.color !== undefined ? args.color?.trim() || undefined : targetPet.color,
+        microchip: args.microchip !== undefined ? args.microchip?.trim() || undefined : targetPet.microchip,
+        notes: args.notes !== undefined ? args.notes?.trim() || undefined : targetPet.notes,
+        routineMode: args.routineMode || targetPet.routineMode,
+      });
+
+      const details: string[] = [];
+      if (updated?.name) details.push(`• Nome: *${updated.name}*`);
+      if (updated?.species) details.push(`• Espécie: *${updated.species}*`);
+      if (updated?.breed) details.push(`• Raça: *${updated.breed}*`);
+      if (updated?.sex) details.push(`• Sexo: *${updated.sex}*`);
+      if (updated?.birthDate) details.push(`• Nascimento: *${updated.birthDate}*`);
+      if (updated?.color) details.push(`• Pelagem: *${updated.color}*`);
+      if (updated?.microchip) details.push(`• Microchip: *${updated.microchip}*`);
+
+      return {
+        replyText: `🐾 *Perfil de ${nextName} Atualizado!*\n\n${details.join("\n")}`,
+        actionTaken: "pet_updated",
+      };
+    }
+
+    case "delete_pet": {
+      const targetName = (args.petName || "").trim();
+      const targetPet = targetName
+        ? allPets.find((p: any) => {
+            const pNorm = normalizeText(p.name);
+            const tNorm = normalizeText(targetName);
+            return pNorm === tNorm || pNorm.includes(tNorm) || tNorm.includes(pNorm);
+          })
+        : undefined;
+
+      if (!targetPet) {
+        return {
+          replyText: `⚠️ Não encontrei o pet *${targetName || "informado"}* na sua conta.`,
+        };
+      }
+
+      await convex.mutation(api.pets.remove, {
+        petId: targetPet._id,
+        userId,
+      });
+
+      const remaining = allPets.filter((p: any) => String(p._id) !== String(targetPet._id));
+      const fallbackPet = remaining[0];
+
+      await convex.mutation(api.whatsapp.updateSession, {
+        userId,
+        currentPetId: fallbackPet ? fallbackPet._id : undefined,
+        state: remaining.length === 0 ? "WAITING_FIRST_PET" : "IDLE",
+      });
+
+      return {
+        replyText:
+          `🗑️ *Pet Removido:* *${targetPet.name}* foi excluído da sua conta.\n` +
+          (fallbackPet
+            ? `🐾 Foco alternado para *${fallbackPet.name}*.`
+            : `Envie *"Nome, espécie, peso"* quando quiser cadastrar um novo pet.`),
+        actionTaken: "pet_deleted",
+        nextState: remaining.length === 0 ? "WAITING_FIRST_PET" : "IDLE",
+        newActivePetId: fallbackPet ? String(fallbackPet._id) : undefined,
+      };
+    }
+
+    case "list_pets": {
+      if (!allPets.length) {
+        return { replyText: "🐾 Você ainda não possui pets vinculados." };
+      }
+
+      const lines = allPets.map((p: any) => {
+        const code = p.shareCode || `PET-${String(p._id).slice(-6).toUpperCase()}`;
+        const activeMark = String(p._id) === String(pet._id) ? " ✅ *[Em foco]*" : "";
+        const modeLabel = p.routineMode === "manual" ? "Manual" : "Por Exceção";
+        return (
+          `• *${p.name}* (${p.species}${p.breed ? `, ${p.breed}` : ""})${activeMark}\n` +
+          `  Peso: ${p.weight ? `${p.weight} kg` : "?"} • Rotina: ${modeLabel} • Código: \`${code}\``
+        );
+      });
+
+      return {
+        replyText:
+          `🐾 *Seus Pets no PetRec (${allPets.length}):*\n\n${lines.join("\n\n")}\n\n` +
+          `💡 _Envie "trocar para [nome]" para alternar, ou "Cadastre o pet [Nome], [espécie], [peso]kg" para adicionar outro._`,
+        actionTaken: "question_answered",
+      };
+    }
+
+    case "list_medications": {
+      if (!medications.length) {
+        return {
+          replyText: `💊 *${pet.name}* não possui medicamentos cadastrados no momento.`,
+          actionTaken: "question_answered",
+        };
+      }
+
+      const lines = medications.map((m: any) => {
+        const sched = m.schedules?.[0];
+        const times = Array.isArray(sched?.times) && sched.times.length > 0 ? sched.times.join(", ") : "--:--";
+        const doseLabel = `${sched?.quantityPerAdministration || 1} ${m.unit || "un"}`;
+        const stockLabel = m.inventoryItem
+          ? ` | Estoque: ${m.inventoryItem.currentQuantity} ${m.inventoryItem.unit} (${m.inventoryItem.status})`
+          : "";
+        const statusTag = m.status === "pending_tutor_approval" ? " ⏳ [Aguardando aprovação]" : "";
+        return (
+          `• *${m.name}*${m.dosage ? ` (${m.dosage})` : ""}${statusTag}\n` +
+          `  Horários: *${times}* • Dose: ${doseLabel}${stockLabel}` +
+          `${m.instructions ? `\n  _${m.instructions}_` : ""}`
+        );
+      });
+
+      return {
+        replyText:
+          `💊 *Medicamentos Cadastrados — ${pet.name}:*\n\n${lines.join("\n\n")}\n\n` +
+          `💡 _Você pode enviar "Muda o horário do [Remédio] para 20h" ou "Parou de tomar [Remédio]"._`,
+        actionTaken: "question_answered",
+      };
+    }
+
+    case "update_medication": {
+      const candidates = findMatchingMedicationCandidates(medications, args.medicationName);
+      if (candidates.length === 0) {
+        return {
+          replyText: `💊 Não encontrei o medicamento *${args.medicationName || ""}* na ficha de *${pet.name}*.`,
+        };
+      }
+      const target = candidates[0];
+      const sched = target.schedules?.[0];
+      const currentTimes = Array.isArray(sched?.times) && sched.times.length > 0 ? sched.times : ["08:00"];
+      const nextTimes =
+        Array.isArray(args.times) && args.times.length > 0
+          ? normalizeMedicationTimes(args.times)
+          : currentTimes;
+      const nextQtyPerAdmin =
+        typeof args.quantityPerAdministration === "number" && args.quantityPerAdministration > 0
+          ? args.quantityPerAdministration
+          : sched?.quantityPerAdministration || 1;
+      const nextCurrentStock =
+        typeof args.currentQuantity === "number" && args.currentQuantity >= 0
+          ? args.currentQuantity
+          : target.inventoryItem?.currentQuantity ?? 0;
+
+      await convex.mutation(api.medications.update, {
+        medicationId: target._id,
+        userId,
+        name: args.newName?.trim() || target.name,
+        activeIngredient: target.activeIngredient,
+        presentation: target.presentation,
+        dosage: args.dosage !== undefined ? args.dosage : target.dosage,
+        unit: args.unit || target.unit,
+        instructions: args.instructions !== undefined ? args.instructions : target.instructions,
+        veterinarian: args.veterinarian !== undefined ? args.veterinarian : target.veterinarian,
+        times: nextTimes,
+        quantityPerAdministration: nextQtyPerAdmin,
+        currentQuantity: nextCurrentStock,
+        purchaseLeadTimeDays: target.inventoryItem?.purchaseLeadTimeDays ?? 5,
+        notes: target.notes,
+      });
+
+      return {
+        replyText:
+          `💊 *Medicamento Atualizado!*\n\n` +
+          `• Nome: *${args.newName?.trim() || target.name}*${
+            args.dosage || target.dosage ? ` (${args.dosage || target.dosage})` : ""
+          }\n` +
+          `• Horários diários: *${nextTimes.join(", ")}* (${nextQtyPerAdmin} ${args.unit || target.unit || "un"}/dose)\n` +
+          `• Estoque: *${nextCurrentStock} ${args.unit || target.unit || "un"}*`,
+        actionTaken: "medication_updated",
+      };
+    }
+
+    case "delete_medication": {
+      const candidates = findMatchingMedicationCandidates(medications, args.medicationName);
+      if (candidates.length === 0) {
+        return {
+          replyText: `💊 Não encontrei o medicamento *${args.medicationName || ""}* na ficha de *${pet.name}*.`,
+        };
+      }
+      const target = candidates[0];
+      await convex.mutation(api.medications.remove, {
+        medicationId: target._id,
+        userId,
+      });
+
+      return {
+        replyText: `🗑️ *Medicamento Excluído:* *${target.name}* e seu cronograma/estoque foram removidos de *${pet.name}*.`,
+        actionTaken: "medication_deleted",
+      };
+    }
+
+    case "delete_inventory_item": {
+      const resolved = resolveInventoryItemOrDisambiguate({
+        inventory,
+        itemName: args.itemName,
+        toolName,
+        args,
+        petName: pet.name,
+      });
+      if ("disambiguation" in resolved) return resolved.disambiguation;
+      if ("notFound" in resolved) {
+        return {
+          replyText: `📦 Não encontrei *${args.itemName}* no estoque de *${pet.name}*.`,
+        };
+      }
+      const target = resolved.item;
+      await convex.mutation(api.inventory.deleteItem, {
+        id: target._id,
+        userId,
+      });
+
+      return {
+        replyText: `🗑️ *Item Removido do Estoque:* *${target.name}* foi excluído de *${pet.name}*.`,
+        actionTaken: "inventory_item_deleted",
+      };
+    }
+
+    case "update_inventory_lead_time": {
+      const days = Math.max(1, Math.min(60, Math.round(Number(args.purchaseLeadTimeDays) || 5)));
+      const resolved = resolveInventoryItemOrDisambiguate({
+        inventory,
+        itemName: args.itemName,
+        toolName,
+        args,
+        petName: pet.name,
+      });
+      if ("disambiguation" in resolved) return resolved.disambiguation;
+      if ("notFound" in resolved) {
+        return {
+          replyText: `📦 Não encontrei *${args.itemName}* no estoque de *${pet.name}*.`,
+        };
+      }
+      const target = resolved.item;
+      await convex.mutation(api.inventory.updateItem, {
+        id: target._id,
+        purchaseLeadTimeDays: days,
+        userId,
+      });
+
+      return {
+        replyText:
+          `⏰ *Antecedência de Alerta Atualizada!*\n\n` +
+          `O alerta de compra de *${target.name}* (*${pet.name}*) agora avisará com *${days} dia(s)* de antecedência.`,
+        actionTaken: "inventory_lead_time_updated",
+      };
+    }
+
+    case "add_shopping_list_item": {
+      const itemName = (args.itemName || "").trim();
+      if (!itemName) {
+        return { replyText: "⚠️ Informe o nome do item para adicionar à lista de compras." };
+      }
+
+      const matchedInv = findMatchingInventoryItem(inventory, itemName);
+      const qty = typeof args.quantity === "number" && args.quantity > 0 ? args.quantity : 1;
+      const unit = args.unit?.trim() || matchedInv?.unit || "un";
+
+      await convex.mutation(api.inventory.addShoppingItem, {
+        petId: pet._id,
+        inventoryItemId: matchedInv?._id,
+        customName: matchedInv ? matchedInv.name : itemName.charAt(0).toUpperCase() + itemName.slice(1),
+        quantity: qty,
+        unit,
+        userId,
+      });
+
+      return {
+        replyText:
+          `🛒 *Item Adicionado à Lista de Compras!*\n\n` +
+          `• *${matchedInv ? matchedInv.name : itemName}* (${qty} ${unit}) incluído para *${pet.name}*.`,
+        actionTaken: "shopping_item_added",
+      };
+    }
+
+    case "toggle_shopping_list_item": {
+      const targetName = normalizeText(args.itemName || "");
+      const desiredPurchased = args.isPurchased !== false;
+      const candidates = shoppingList.filter((s: any) =>
+        desiredPurchased ? !s.isPurchased : Boolean(s.isPurchased)
+      );
+      const found = candidates.find((s: any) => {
+        const label = normalizeText(s.customName || s.inventoryItem?.name || "");
+        return label && (label.includes(targetName) || targetName.includes(label));
+      });
+
+      if (!found) {
+        return {
+          replyText: `🛒 Não encontrei *${args.itemName}* ${desiredPurchased ? "pendente" : "comprado"} na lista de compras de *${pet.name}*.`,
+        };
+      }
+
+      await convex.mutation(api.inventory.toggleShoppingItem, {
+        id: found._id,
+        isPurchased: desiredPurchased,
+        userId,
+      });
+
+      const label = found.customName || found.inventoryItem?.name || args.itemName;
+      return {
+        replyText: desiredPurchased
+          ? `✅ *${label}* marcado como comprado na lista de *${pet.name}*!`
+          : `🔄 *${label}* recolocado como pendente na lista de *${pet.name}*.`,
+        actionTaken: "shopping_item_toggled",
+      };
+    }
+
+    case "list_purchases": {
+      const purchases = await convex.query(api.inventory.listPurchases, {
+        petId: pet._id,
+      });
+      if (!purchases || purchases.length === 0) {
+        return {
+          replyText: `🧾 Nenhuma compra com valor registrada até o momento para *${pet.name}*.\n\n💡 _Experimente: "Comprei 15kg de ração por R$ 240 na Cobasi"._`,
+          actionTaken: "question_answered",
+        };
+      }
+
+      const totalSpent = purchases.reduce((acc: number, p: any) => acc + (Number(p.total) || 0), 0);
+      const lines = purchases.slice(0, 6).map((p: any) => {
+        const dStr = p.date ? format(new Date(p.date), "dd/MM/yyyy", { locale: ptBR }) : "--/--";
+        const itemSummary = Array.isArray(p.items) && p.items.length > 0
+          ? p.items.map((it: any) => it.inventoryItem?.name || "Item").join(", ")
+          : p.notes || "Compra";
+        return `• ${dStr} — *R$ ${(Number(p.total) || 0).toFixed(2).replace(".", ",")}* (${p.supplier || "Loja"})\n  _${itemSummary}_`;
+      });
+
+      return {
+        replyText:
+          `🧾 *Histórico de Compras — ${pet.name}:*\n\n${lines.join("\n\n")}\n\n` +
+          `💰 *Total acumulado:* R$ ${totalSpent.toFixed(2).replace(".", ",")}`,
+        actionTaken: "question_answered",
+      };
+    }
+
+    case "record_appointment": {
+      const title = (args.title || "Consulta Veterinária").trim();
+      const type = args.type || "consulta";
+      const date = args.date || format(new Date(), "yyyy-MM-dd");
+      const time = args.time || "09:00";
+
+      await convex.mutation(api.health.recordAppointment, {
+        petId: pet._id,
+        userId,
+        title,
+        type,
+        date,
+        time,
+        veterinarian: args.veterinarian || undefined,
+        location: args.location || undefined,
+        notes: args.notes || undefined,
+      });
+
+      return {
+        replyText:
+          `📅 *Compromisso Agendado!*\n\n` +
+          `• *${title}* (${type}) para *${pet.name}*\n` +
+          `• Data: *${date}* às *${time}*` +
+          `${args.veterinarian ? `\n• Veterinário: *${args.veterinarian}*` : ""}` +
+          `${args.location ? `\n• Local: *${args.location}*` : ""}`,
+        actionTaken: "appointment_recorded",
+      };
+    }
+
+    case "list_appointments": {
+      const appts = [...(health.appointments || [])].sort((a: any, b: any) =>
+        `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
+      );
+
+      if (appts.length === 0) {
+        return {
+          replyText: `📅 *${pet.name}* não possui consultas ou compromissos agendados.\n\n💡 _Envie por exemplo: "Agendar consulta dia 25/11/2026 às 14:30 com Dra. Camila"._`,
+          actionTaken: "question_answered",
+        };
+      }
+
+      const lines = appts.map(
+        (a: any) =>
+          `• *${a.title}* (${a.type})\n  📆 ${a.date} às ${a.time}${
+            a.veterinarian ? ` • ${a.veterinarian}` : ""
+          }${a.location ? ` • ${a.location}` : ""}`
+      );
+
+      return {
+        replyText: `📅 *Agenda de Saúde — ${pet.name}:*\n\n${lines.join("\n\n")}`,
+        actionTaken: "question_answered",
+      };
+    }
+
+    case "review_prescription": {
+      const pendingMeds = medications.filter((m: any) => m.status === "pending_tutor_approval");
+      if (pendingMeds.length === 0) {
+        return {
+          replyText: `ℹ️ *${pet.name}* não possui nenhuma prescrição veterinária aguardando aprovação no momento.`,
+        };
+      }
+
+      const target = args.medicationName
+        ? findMatchingMedicationCandidates(pendingMeds, args.medicationName)[0]
+        : pendingMeds[0];
+
+      if (!target) {
+        return {
+          replyText: `⚠️ Não encontrei prescrição pendente para *${args.medicationName}*.`,
+        };
+      }
+
+      if (args.action === "reject") {
+        await convex.mutation(api.medications.rejectPrescription, {
+          medicationId: target._id,
+          userId,
+          notes: args.notes || undefined,
+        });
+        return {
+          replyText: `❌ Prescrição de *${target.name}* para *${pet.name}* foi recusada.`,
+          actionTaken: "prescription_rejected",
+        };
+      }
+
+      const initialQty =
+        typeof args.initialStockQuantity === "number" && args.initialStockQuantity >= 0
+          ? args.initialStockQuantity
+          : 10;
+
+      await convex.mutation(api.medications.approvePrescription, {
+        medicationId: target._id,
+        userId,
+        initialStockQuantity: initialQty,
+      });
+
+      return {
+        replyText:
+          `✅ *Prescrição Aprovada!*\n\n` +
+          `O tratamento com *${target.name}* foi ativado para *${pet.name}* com estoque inicial de *${initialQty} ${target.unit || "un"}*.`,
+        actionTaken: "prescription_approved",
+      };
+    }
+
+    case "manage_health_record": {
+      const hint = normalizeText(args.targetHint || "");
+
+      if (args.recordType === "clinical_note") {
+        const notes = [...(health.clinicalNotes || [])].sort(
+          (a: any, b: any) => (b._creationTime || 0) - (a._creationTime || 0)
+        );
+        const target = hint
+          ? notes.find((n: any) => normalizeText(n.content || "").includes(hint))
+          : notes[0];
+        if (!target) {
+          return { replyText: `📋 Não encontrei nenhuma nota clínica compatível no prontuário de *${pet.name}*.` };
+        }
+        if (args.action === "delete") {
+          await convex.mutation(api.health.deleteClinicalNote, {
+            noteId: target._id,
+            userId,
+          });
+          return {
+            replyText: `🗑️ *Nota Clínica Excluída:* _"${target.content}"_ foi removida do prontuário de *${pet.name}*.`,
+            actionTaken: "health_record_deleted",
+          };
+        }
+        const nextContent = (args.newContent || "").trim();
+        if (!nextContent) {
+          return { replyText: "⚠️ Informe o novo texto para atualizar a nota clínica." };
+        }
+        await convex.mutation(api.health.updateClinicalNote, {
+          noteId: target._id,
+          userId,
+          content: nextContent,
+        });
+        return {
+          replyText: `✏️ *Nota Clínica Atualizada:*\n_"${nextContent}"_`,
+          actionTaken: "health_record_updated",
+        };
+      }
+
+      if (args.recordType === "weight") {
+        const weights = [...(health.weights || [])].sort(
+          (a: any, b: any) =>
+            new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime() ||
+            (b._creationTime || 0) - (a._creationTime || 0)
+        );
+        const target = weights[0];
+        if (!target) {
+          return { replyText: `⚖️ Não há pesagens registradas para *${pet.name}*.` };
+        }
+        if (args.action === "delete") {
+          await convex.mutation(api.health.deleteWeight, {
+            weightId: target._id,
+            userId,
+          });
+          return {
+            replyText: `🗑️ *Pesagem Excluída:* Registro de *${target.weight} kg* removido do histórico de *${pet.name}*.`,
+            actionTaken: "health_record_deleted",
+          };
+        }
+        const newW = Number(args.newWeightKg);
+        if (!newW || newW <= 0 || newW >= 200) {
+          return { replyText: "⚠️ Informe um novo peso válido em kg." };
+        }
+        await convex.mutation(api.health.updateWeight, {
+          weightId: target._id,
+          userId,
+          weight: newW,
+          date: args.newDate || target.date,
+          notes: target.notes,
+        });
+        return {
+          replyText: `✏️ *Pesagem Atualizada:* Último peso de *${pet.name}* ajustado para *${newW} kg*.`,
+          actionTaken: "health_record_updated",
+        };
+      }
+
+      if (args.recordType === "vaccine") {
+        const vaccines = [...(health.vaccines || [])].sort(
+          (a: any, b: any) => (b._creationTime || 0) - (a._creationTime || 0)
+        );
+        const target = hint
+          ? vaccines.find((v: any) => normalizeText(v.name || "").includes(hint))
+          : vaccines[0];
+        if (!target) {
+          return { replyText: `💉 Não encontrei essa vacina no prontuário de *${pet.name}*.` };
+        }
+        if (args.action === "delete") {
+          await convex.mutation(api.health.deleteVaccine, {
+            vaccineId: target._id,
+            userId,
+          });
+          return {
+            replyText: `🗑️ *Vacina Excluída:* *${target.name}* foi removida da carteirinha de *${pet.name}*.`,
+            actionTaken: "health_record_deleted",
+          };
+        }
+        await convex.mutation(api.health.updateVaccine, {
+          vaccineId: target._id,
+          userId,
+          name: args.newTitle?.trim() || target.name,
+          applicationDate: args.newDate || target.applicationDate,
+          nextDueDate: args.newNextDueDate !== undefined ? args.newNextDueDate : target.nextDueDate,
+          veterinarian: target.veterinarian,
+          crmv: target.crmv,
+          batch: target.batch,
+          notes: target.notes,
+        });
+        return {
+          replyText: `✏️ *Vacina Atualizada:* *${args.newTitle?.trim() || target.name}* de *${pet.name}* salva com sucesso.`,
+          actionTaken: "health_record_updated",
+        };
+      }
+
+      if (args.recordType === "appointment") {
+        const appts = [...(health.appointments || [])].sort(
+          (a: any, b: any) => (b._creationTime || 0) - (a._creationTime || 0)
+        );
+        const target = hint
+          ? appts.find((a: any) => normalizeText(a.title || "").includes(hint))
+          : appts[0];
+        if (!target) {
+          return { replyText: `📅 Não encontrei nenhum compromisso compatível para *${pet.name}*.` };
+        }
+        if (args.action === "delete") {
+          await convex.mutation(api.health.deleteAppointment, {
+            appointmentId: target._id,
+            userId,
+          });
+          return {
+            replyText: `🗑️ *Compromisso Cancelado/Excluído:* *${target.title}* (${target.date} às ${target.time}) removido da agenda de *${pet.name}*.`,
+            actionTaken: "health_record_deleted",
+          };
+        }
+        await convex.mutation(api.health.updateAppointment, {
+          appointmentId: target._id,
+          userId,
+          title: args.newTitle?.trim() || target.title,
+          type: target.type,
+          date: args.newDate || target.date,
+          time: args.newTime || target.time,
+          location: target.location,
+          veterinarian: target.veterinarian,
+          notes: target.notes,
+        });
+        return {
+          replyText: `✏️ *Compromisso Atualizado:* *${args.newTitle?.trim() || target.title}* (${args.newDate || target.date} às ${args.newTime || target.time}).`,
+          actionTaken: "health_record_updated",
+        };
+      }
+
+      return { replyText: "⚠️ Tipo de registro de saúde inválido." };
+    }
+
+    case "get_pet_share_code_or_invite": {
+      const petDetails = await convex.query(api.pets.getById, { petId: pet._id });
+      const shareCode = petDetails?.shareCode || `PET-${String(pet._id).slice(-6).toUpperCase()}`;
+      const appUrl = (
+        process.env.NEXT_PUBLIC_APP_URL ||
+        process.env.NEXT_PUBLIC_HOST_URL ||
+        "https://petrec.vercel.app"
+      ).replace(/\/+$/, "");
+
+      if (args.createInvite || args.invitedName || args.invitedEmail || args.invitedPhone) {
+        const res = await convex.mutation(api.users.inviteOrAddMember, {
+          petId: pet._id,
+          invitedName: args.invitedName?.trim() || undefined,
+          invitedEmail: args.invitedEmail?.trim() || undefined,
+          invitedPhone: args.invitedPhone?.trim() || undefined,
+          invitedById: userId,
+          role: args.role || "caregiver",
+          accessDays: typeof args.accessDays === "number" ? args.accessDays : undefined,
+        });
+        const token = res?.invitation?.token || shareCode;
+        return {
+          replyText:
+            `🤝 *Convite Gerado para ${pet.name}!*\n\n` +
+            `• Código do convite: \`${token}\`\n` +
+            `• Link direto: ${appUrl}/convite/${token}\n\n` +
+            `💡 _A pessoa convidada pode abrir o link ou enviar \`${token}\` aqui no WhatsApp do PetRec para se vincular na hora._`,
+          actionTaken: "invite_created",
+        };
+      }
+
+      return {
+        replyText:
+          `🔑 *Compartilhamento de ${pet.name}:*\n\n` +
+          `• Código permanente do pet: \`${shareCode}\`\n` +
+          `• Link de acesso: ${appUrl}/convite/${shareCode}\n\n` +
+          `💡 _Para convidar outro tutor ou veterinário, compartilhe o código \`${shareCode}\` ou peça: "Gerar convite para [Nome] como veterinário"._`,
+        actionTaken: "question_answered",
+      };
+    }
+
+    case "list_pet_members": {
+      const petDetails = await convex.query(api.pets.getById, { petId: pet._id });
+      const members = petDetails?.members || [];
+      if (members.length === 0) {
+        return {
+          replyText: `👥 *${pet.name}* não possui membros carregados.`,
+          actionTaken: "question_answered",
+        };
+      }
+
+      const lines = members.map((m: any) => {
+        const roleLabel =
+          m.role === "owner"
+            ? "Tutor(a) Principal"
+            : m.role === "vet_limited"
+            ? "Médico Veterinário"
+            : m.role === "caregiver_pro"
+            ? "Cuidador Pro"
+            : m.role === "viewer"
+            ? "Visualizador"
+            : "Tutor Familiar";
+        const notifIcon = m.notifyWhatsApp === false ? "🔕 Silenciado" : "🔔 WhatsApp ativo";
+        return `• *${m.user?.name || "Tutor"}* — ${roleLabel} (${notifIcon})`;
+      });
+
+      return {
+        replyText: `👥 *Equipe de Cuidados — ${pet.name}:*\n\n${lines.join("\n")}`,
+        actionTaken: "question_answered",
+      };
+    }
+
+    case "toggle_whatsapp_notifications": {
+      const petDetails = await convex.query(api.pets.getById, { petId: pet._id });
+      const membership = (petDetails?.members || []).find(
+        (m: any) => String(m.userId) === String(userId)
+      );
+      if (!membership) {
+        return { replyText: `⚠️ Não encontrei seu vínculo com *${pet.name}*.` };
+      }
+
+      const enabled = Boolean(args.enabled);
+      await convex.mutation(api.users.toggleMemberWhatsAppNotifications, {
+        memberId: membership._id,
+        notifyWhatsApp: enabled,
+      });
+
+      return {
+        replyText: enabled
+          ? `🔔 *Notificações Ativadas!*\nVocê voltará a receber avisos de atividades de outros tutores de *${pet.name}* no WhatsApp.`
+          : `🔕 *Notificações Silenciadas!*\nVocê não receberá avisos de rotina de outros tutores de *${pet.name}* no WhatsApp (pode reativar quando quiser enviando *"Ativar notificações"*).`,
+        actionTaken: "notifications_toggled",
+      };
+    }
+
     case "answer_question": {
       return {
         replyText: args.answerText || `🐾 Tudo certo com *${pet.name}*!`,
@@ -2069,6 +3657,7 @@ async function interpretWithContextualNlu(
     const actions: string[] = [];
     let finalState = "IDLE";
     let finalPayload: string | undefined;
+    let finalNewPetId: string | undefined;
 
     for (const clause of clauses) {
       const subRes = await interpretSingleClauseNlu(clause.trim(), snapshot, convex, userId);
@@ -2078,6 +3667,9 @@ async function interpretWithContextualNlu(
         if (subRes.nextState !== "IDLE") {
           finalState = subRes.nextState;
           finalPayload = subRes.pendingActionPayload;
+        }
+        if (subRes.newActivePetId) {
+          finalNewPetId = subRes.newActivePetId;
         }
       }
     }
@@ -2089,12 +3681,38 @@ async function interpretWithContextualNlu(
         actionTaken: actions.join(","),
         nextState: finalState,
         pendingActionPayload: finalPayload,
+        newActivePetId: finalNewPetId,
         usedGemini: false,
       };
     }
   }
 
   return interpretSingleClauseNlu(messageText, snapshot, convex, userId);
+}
+
+async function callNluTool(
+  convex: ConvexHttpClient,
+  toolName: string,
+  args: Record<string, any>,
+  snapshot: PetContextSnapshot,
+  userId: any
+): Promise<AiAssistantResult> {
+  const exec = await executeAssistantToolCall({
+    convex,
+    toolName,
+    args,
+    snapshot,
+    userId,
+  });
+  return {
+    handled: true,
+    replyText: exec.replyText,
+    actionTaken: exec.actionTaken,
+    nextState: exec.nextState || "IDLE",
+    pendingActionPayload: exec.pendingActionPayload,
+    newActivePetId: exec.newActivePetId,
+    usedGemini: false,
+  };
 }
 
 function parseExplicitClinicalNote(
@@ -2148,21 +3766,422 @@ async function interpretSingleClauseNlu(
     Boolean(parseVaccineFromText(messageText));
 
   if (explicitNoteContent && !isExplicitVaccineNote) {
-    const exec = await executeAssistantToolCall({
-      convex,
-      toolName: "record_clinical_note",
-      args: { content: explicitNoteContent },
-      snapshot,
-      userId,
-    });
+    return callNluTool(convex, "record_clinical_note", { content: explicitNoteContent }, snapshot, userId);
+  }
 
-    return {
-      handled: true,
-      replyText: exec.replyText,
-      actionTaken: exec.actionTaken,
-      nextState: "IDLE",
-      usedGemini: false,
-    };
+  // 0a. Cadastro explícito de novo pet ("Cadastre o Serelepe, meu saruê de estimação", "Adotei uma gata chamada Luna")
+  const petCreation = parsePetCreationFromText(messageText, petNamesList);
+  if (petCreation) {
+    return callNluTool(convex, "create_pet", petCreation, snapshot, userId);
+  }
+
+  // 0b. Silenciar ou reativar notificações do WhatsApp para o pet em foco
+  if (
+    /\b(?:silenci(?:a|e|ar)|desativ(?:a|e|ar)|paus(?:a|e|ar)|mut(?:a|e|ar))\b.*\bnotificac(?:ao|oes)\b/.test(
+      clean
+    )
+  ) {
+    return callNluTool(convex, "toggle_whatsapp_notifications", { enabled: false }, snapshot, userId);
+  }
+  if (
+    /\b(?:ativ(?:a|e|ar)|reativ(?:a|e|ar)|lig(?:a|ue|ar)|habilit(?:a|e|ar))\b.*\bnotificac(?:ao|oes)\b/.test(
+      clean
+    )
+  ) {
+    return callNluTool(convex, "toggle_whatsapp_notifications", { enabled: true }, snapshot, userId);
+  }
+
+  // 0c. Alternar modo de rotina ("Mudar para modo manual", "Ativar modo por exceção")
+  const hasRoutineSwitchVerb =
+    /\b(?:mud(?:a|e|ar)|alter(?:a|e|ar)|ativ(?:a|e|ar)|defin(?:a|e|ir)|troc(?:a|e|ar)|coloc(?:a|ue|ar))\b/.test(
+      clean
+    );
+  if (clean.includes("modo manual") && hasRoutineSwitchVerb) {
+    return callNluTool(convex, "update_pet", { routineMode: "manual" }, snapshot, userId);
+  }
+  if (
+    (clean.includes("modo por excecao") || clean.includes("modo automatico")) &&
+    hasRoutineSwitchVerb
+  ) {
+    return callNluTool(convex, "update_pet", { routineMode: "automatic_by_exception" }, snapshot, userId);
+  }
+
+  // 0d. Listar pets / Listar membros / Código de compartilhamento / Gerar convite
+  if (
+    /^(?:meus\s+pets|quais\s+(?:sao\s+)?(?:os\s+)?(?:meus\s+)?pets|listar\s+pets)\??$/.test(clean)
+  ) {
+    return callNluTool(convex, "list_pets", {}, snapshot, userId);
+  }
+  if (
+    /\b(?:tutores|membros|equipe)\b/.test(clean) &&
+    /\b(?:quais|quem|listar|ver|mostrar)\b/.test(clean)
+  ) {
+    return callNluTool(convex, "list_pet_members", {}, snapshot, userId);
+  }
+  if (
+    /\b(?:gerar|criar|fazer|enviar)\s+(?:um\s+)?convite\b/.test(clean) ||
+    /\bconvidar\s+([A-Za-zÀ-ú0-9\s]{2,30})/.test(clean)
+  ) {
+    const nameMatch = messageText.match(
+      /(?:convite\s+para\s+|convidar\s+)(?:o\s+|a\s+)?([A-Za-zÀ-ú][A-Za-zÀ-ú.\s]{1,25}?)(?=\s*(?:como\b|por\b|,|$))/i
+    );
+    const emailMatch = messageText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    const phoneMatch = messageText.match(/\+?\d[\d\s()-]{8,16}\d/);
+    const role = clean.includes("vet")
+      ? "vet_limited"
+      : clean.includes("cuidador") || clean.includes("sitter")
+      ? "caregiver_pro"
+      : clean.includes("visualiz")
+      ? "viewer"
+      : "caregiver";
+    return callNluTool(
+      convex,
+      "get_pet_share_code_or_invite",
+      {
+        createInvite: true,
+        invitedName: nameMatch?.[1]?.trim(),
+        invitedEmail: emailMatch?.[0],
+        invitedPhone: phoneMatch?.[0],
+        role,
+        accessDays: role === "vet_limited" || role === "caregiver_pro" ? 30 : undefined,
+      },
+      snapshot,
+      userId
+    );
+  }
+  if (
+    clean.includes("codigo de compartilhamento") ||
+    clean.includes("codigo para compartilhar") ||
+    /\bcodigo\s+do\s+pet\b/.test(clean) ||
+    (/\b(?:qual|ver|mostrar)\b.*\bcodigo\b/.test(clean) && !clean.includes("medicamento"))
+  ) {
+    return callNluTool(convex, "get_pet_share_code_or_invite", {}, snapshot, userId);
+  }
+
+  // 0e. Excluir pet / Editar perfil do pet
+  const deletePetMatch = messageText.match(
+    /^(?:exclu(?:i|a|ir)|delet(?:a|e|ar)|apag(?:a|ue|ar)|remov(?:a|e|er))\s+(?:o\s+|a\s+)?pet\s+(.+)$/i
+  );
+  if (deletePetMatch?.[1]?.trim()) {
+    return callNluTool(
+      convex,
+      "delete_pet",
+      { petName: deletePetMatch[1].trim() },
+      snapshot,
+      userId
+    );
+  }
+
+  const updatePetFieldMatch = messageText.match(
+    /^(?:mud(?:a|e|ar)|alter(?:a|e|ar)|atualiz(?:a|e|ar)|defin(?:a|e|ir)|edit(?:a|e|ar))\s+(?:o\s+|a\s+)?(nome|raca|raça|especie|espécie|sexo|microchip|cor|pelagem|nascimento)\s+(?:do\s+pet\s+|da\s+pet\s+|de\s+[A-Za-zÀ-ú0-9]+\s+)?para\s+(.+)$/i
+  );
+  if (updatePetFieldMatch?.[1] && updatePetFieldMatch?.[2]) {
+    const field = normalizeText(updatePetFieldMatch[1]);
+    const val = updatePetFieldMatch[2].trim();
+    const argsMap: Record<string, any> = {};
+    if (field === "nome") argsMap.newName = val;
+    else if (field === "raca") argsMap.breed = val;
+    else if (field === "especie") argsMap.species = val;
+    else if (field === "sexo") argsMap.sex = normalizeText(val).includes("femea") ? "Fêmea" : "Macho";
+    else if (field === "microchip") argsMap.microchip = val;
+    else if (field === "cor" || field === "pelagem") argsMap.color = val;
+    else if (field === "nascimento") argsMap.birthDate = parseBrOrIsoDateToIso(val) || val;
+    return callNluTool(convex, "update_pet", argsMap, snapshot, userId);
+  }
+
+  // 0f. Gestão do Prontuário / Saúde: Compromissos (Agendar / Listar) & Prescrições & Edição/Exclusão
+  const newAppt = parseAppointmentFromText(messageText);
+  if (newAppt) {
+    return callNluTool(convex, "record_appointment", newAppt, snapshot, userId);
+  }
+
+  if (
+    (/\b(?:consultas?|compromissos?|exames?|agenda)\b/.test(clean) &&
+      /\b(?:proxim[ao]s?|agenda|quais|ver|listar|tem|marcadas?)\b/.test(clean) &&
+      !clean.includes("remedio")) ||
+    clean === "agenda" ||
+    clean === "consultas"
+  ) {
+    return callNluTool(convex, "list_appointments", {}, snapshot, userId);
+  }
+
+  const rxReviewMatch = clean.match(
+    /^(aprov(?:a|e|ar)|aceit(?:a|e|ar)|recus(?:a|e|ar)|rejeit(?:a|e|ar))\s+(?:a\s+)?(?:prescricao|receita)(?:\s+(?:d[eoa]\s+)?(.+))?$/i
+  );
+  if (rxReviewMatch) {
+    const isReject = rxReviewMatch[1].startsWith("recus") || rxReviewMatch[1].startsWith("rejeit");
+    const stockMatch = extractStockQuantityAndUnit(clean);
+    const tail = rxReviewMatch[2]
+      ? rxReviewMatch[2].replace(/\bcom\s+\d+.*$/i, "").trim()
+      : undefined;
+    return callNluTool(
+      convex,
+      "review_prescription",
+      {
+        action: isReject ? "reject" : "approve",
+        medicationName: tail,
+        initialStockQuantity: stockMatch?.quantity,
+      },
+      snapshot,
+      userId
+    );
+  }
+
+  // Editar ou excluir registros de saúde (nota clínica, pesagem, vacina, compromisso)
+  const isHealthCrud =
+    /\b(?:exclu(?:i|a|ir)|apag(?:a|ue|ar)|delet(?:a|e|ar)|remov(?:a|e|er)|cancel(?:a|e|ar)|edit(?:a|e|ar)|alter(?:a|e|ar)|corrig(?:e|ir)|mud(?:a|e|ar))\b/.test(
+      clean
+    ) &&
+    /\b(?:nota|anotacao|prontuario|pesagem|peso|vacina|consulta|exame|compromisso|retorno|banho)\b/.test(
+      clean
+    );
+
+  if (isHealthCrud) {
+    const isEdit = /\b(?:edit|alter|corrig|mud)/.test(clean);
+    const action = isEdit ? "edit" : "delete";
+    let recordType: "clinical_note" | "weight" | "vaccine" | "appointment" = "clinical_note";
+    if (/\b(?:peso|pesagem)\b/.test(clean)) recordType = "weight";
+    else if (/\bvacina\b/.test(clean)) recordType = "vaccine";
+    else if (/\b(?:consulta|exame|compromisso|retorno|banho)\b/.test(clean)) recordType = "appointment";
+
+    const paraSplit = messageText.match(/\b(?:para|por)\s*[:,-]?\s+([\s\S]+)$/i);
+    const newVal = paraSplit?.[1]?.trim();
+
+    if (recordType === "clinical_note") {
+      return callNluTool(
+        convex,
+        "manage_health_record",
+        {
+          recordType,
+          action,
+          newContent: isEdit ? newVal : undefined,
+        },
+        snapshot,
+        userId
+      );
+    }
+
+    if (recordType === "weight") {
+      const wMatch = newVal?.match(/(\d+(?:[.,]\d+)?)/);
+      return callNluTool(
+        convex,
+        "manage_health_record",
+        {
+          recordType,
+          action,
+          newWeightKg: wMatch ? parseFloat(wMatch[1].replace(",", ".")) : undefined,
+        },
+        snapshot,
+        userId
+      );
+    }
+
+    if (recordType === "vaccine") {
+      const hintMatch = messageText.match(/\bvacina\s+(?:de\s+)?(.+?)(?=\s+(?:para|em)\b|$)/i);
+      const hintClean = hintMatch?.[1]?.trim();
+      const targetHint =
+        hintClean && !/^(?:ultima|ultimo|recente)$/i.test(normalizeText(hintClean))
+          ? hintClean
+          : undefined;
+      return callNluTool(
+        convex,
+        "manage_health_record",
+        {
+          recordType,
+          action,
+          targetHint,
+          newDate: isEdit && newVal ? parseBrOrIsoDateToIso(newVal) : undefined,
+          newTitle: isEdit && newVal && !parseBrOrIsoDateToIso(newVal) ? newVal : undefined,
+        },
+        snapshot,
+        userId
+      );
+    }
+
+    if (recordType === "appointment") {
+      const hintMatch = messageText.match(
+        /\b(?:consulta|exame|compromisso|retorno|banho)\s+(.+?)(?=\s+(?:para|dia)\b|$)/i
+      );
+      const hintClean = hintMatch?.[1]?.trim();
+      const targetHint =
+        hintClean && !/^(?:ultimo|ultima|recente|do|da)$/i.test(normalizeText(hintClean))
+          ? hintClean
+          : undefined;
+      const newDate = isEdit && newVal ? parseBrOrIsoDateToIso(newVal) : undefined;
+      const newTimeMatch = isEdit && newVal ? newVal.match(/(\d{1,2})\s*(?:h|:)\s*(\d{2})?/i) : null;
+      const newTime = newTimeMatch
+        ? `${newTimeMatch[1].padStart(2, "0")}:${newTimeMatch[2] || "00"}`
+        : undefined;
+      return callNluTool(
+        convex,
+        "manage_health_record",
+        {
+          recordType,
+          action,
+          targetHint,
+          newDate,
+          newTime,
+          newTitle: isEdit && newVal && !newDate && !newTime ? newVal : undefined,
+        },
+        snapshot,
+        userId
+      );
+    }
+  }
+
+  // 0g. Medicamentos: Ficha completa, Editar horário/dose/instrução, Excluir/Parar medicamento
+  if (
+    (/\b(?:quais\s+(?:remedios|medicamentos)|ficha\s+de\s+(?:remedios|medicamentos)|listar\s+(?:remedios|medicamentos)|(?:remedios|medicamentos)\s+cadastrados)\b/.test(
+      clean
+    ) ||
+      (clean.includes("toma") && clean.includes("?") && (clean.includes("remedio") || clean.includes("medicamento")))) &&
+    !clean.includes("estoque")
+  ) {
+    return callNluTool(convex, "list_medications", {}, snapshot, userId);
+  }
+
+  const matchedMedInMsg = findMatchingMedicationCandidates(snapshot.medications, messageText).filter((m) =>
+    hasWordInNormalizedText(clean, normalizeText(m.name))
+  );
+
+  if (
+    /\b(?:exclu(?:i|a|ir)|delet(?:a|e|ar)|apag(?:a|ue|ar)|remov(?:a|e|er)|parou\s+de\s+tomar|suspend(?:a|e|er))\b/.test(
+      clean
+    ) &&
+    (clean.includes("medicamento") || clean.includes("remedio") || matchedMedInMsg.length > 0) &&
+    !clean.includes("estoque")
+  ) {
+    const explicitMedMatch = messageText.match(
+      /(?:medicamento|rem[eé]dio|tomar)\s+([A-Za-zÀ-ú0-9\s-]{2,30})$/i
+    );
+    const medTarget = matchedMedInMsg[0]?.name || explicitMedMatch?.[1]?.trim();
+    if (medTarget) {
+      return callNluTool(convex, "delete_medication", { medicationName: medTarget }, snapshot, userId);
+    }
+  }
+
+  if (
+    /\b(?:mud(?:a|e|ar)|alter(?:a|e|ar)|atualiz(?:a|e|ar)|ajust(?:a|e|ar))\b/.test(clean) &&
+    (clean.includes("horario") ||
+      clean.includes("posologia") ||
+      clean.includes("dosagem") ||
+      clean.includes("dose") ||
+      clean.includes("instruc") ||
+      (matchedMedInMsg.length > 0 && /\b\d{1,2}\s*(?:h|:)\b/.test(clean))) &&
+    !clean.includes("estoque") &&
+    !clean.includes("saldo")
+  ) {
+    const targetMed =
+      matchedMedInMsg[0] ||
+      snapshot.medications.find((m) => clean.includes(normalizeText(m.name)));
+    if (targetMed) {
+      const timesInfo = extractTimesAndFrequency(messageText);
+      const dosageMatch = messageText.match(/(\d+(?:[.,]\d+)?\s*(?:mg\/ml|mcg\/ml|mg|ml|mcg|ui))/i);
+      const qtyDoseMatch = clean.includes("dose")
+        ? clean.match(/(\d+(?:[.,]\d+)?)\s*(?:comprimidos?|capsulas?|doses?|gotas?|unidades?)/)
+        : null;
+      const instrMatch = clean.includes("instruc")
+        ? messageText.match(/\b(?:para|como)\s+([\s\S]+)$/i)
+        : null;
+      return callNluTool(
+        convex,
+        "update_medication",
+        {
+          medicationName: targetMed.name,
+          times: timesInfo.hasExplicitHint ? timesInfo.times : undefined,
+          dosage: dosageMatch ? dosageMatch[1].replace(/\s+/g, "") : undefined,
+          quantityPerAdministration: qtyDoseMatch
+            ? parseFloat(qtyDoseMatch[1].replace(",", "."))
+            : undefined,
+          instructions: instrMatch?.[1]?.trim() || undefined,
+        },
+        snapshot,
+        userId
+      );
+    }
+  }
+
+  // 0h. Estoque Avançado (Excluir do estoque / Alterar antecedência de alerta)
+  if (
+    /\b(?:exclu(?:i|a|ir)|delet(?:a|e|ar)|apag(?:a|ue|ar)|remov(?:a|e|er))\b/.test(clean) &&
+    (clean.includes("estoque") || clean.includes("item"))
+  ) {
+    const matchedInv = findInventoryMatchesInMessage(messageText, snapshot);
+    const nameMatch = messageText.match(
+      /(?:exclu(?:i|a|ir)|delet(?:a|e|ar)|apag(?:a|ue|ar)|remov(?:a|e|er))\s+(?:o\s+|a\s+)?(?:item\s+)?(.+?)(?:\s+do\s+estoque|\s+de\s+estoque|$)/i
+    );
+    const targetName = matchedInv[0]?.name || nameMatch?.[1]?.trim();
+    if (targetName) {
+      return callNluTool(convex, "delete_inventory_item", { itemName: targetName }, snapshot, userId);
+    }
+  }
+
+  if (
+    (clean.includes("antecedencia") || clean.includes("dias antes") || /\bavisar\b.*\bdias\b/.test(clean)) &&
+    /\b\d+\s*dias?\b/.test(clean)
+  ) {
+    const daysMatch = clean.match(/(\d+)\s*dias?/);
+    const matchedInv = findInventoryMatchesInMessage(messageText, snapshot);
+    if (daysMatch && matchedInv[0]) {
+      return callNluTool(
+        convex,
+        "update_inventory_lead_time",
+        {
+          itemName: matchedInv[0].name,
+          purchaseLeadTimeDays: parseInt(daysMatch[1], 10),
+        },
+        snapshot,
+        userId
+      );
+    }
+  }
+
+  // 0i. Lista de Compras (Adicionar / Marcar como comprado / Desmarcar) e Histórico de Compras (Gastos)
+  if (
+    /\b(?:historico\s+de\s+compras|ultimas\s+compras|quanto\s+gastei|gastos?\s+(?:com\s+)?(?:pet|compras)|resumo\s+de\s+compras)\b/.test(
+      clean
+    )
+  ) {
+    return callNluTool(convex, "list_purchases", {}, snapshot, userId);
+  }
+
+  const addShopMatch = messageText.match(
+    /^(?:adicion(?:a|e|ar)|coloc(?:a|ue|ar)|inclu(?:i|a|ir)|bota(?:r)?|anot(?:a|e|ar))\s+(?:o\s+|a\s+|um\s+|uma\s+)?(.+?)\s+(?:na|à|a|no)\s+lista\s+de\s+compras\b/i
+  );
+  if (addShopMatch?.[1]?.trim()) {
+    const bodyShop = addShopMatch[1].trim();
+    const qtyUnit = extractStockQuantityAndUnit(bodyShop);
+    const itemName = qtyUnit
+      ? bodyShop.replace(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|unidades?|un|comprimidos?|c[aá]psulas?|ml)?\s*(?:de\s+)?/i, "").trim() || bodyShop
+      : bodyShop;
+    return callNluTool(
+      convex,
+      "add_shopping_list_item",
+      {
+        itemName,
+        quantity: qtyUnit?.quantity || 1,
+        unit: qtyUnit?.unit || "un",
+      },
+      snapshot,
+      userId
+    );
+  }
+
+  const toggleShopMatch = messageText.match(
+    /^(?:marcar|marque|riscar|risque|desmarcar|desmarque)\s+(?:o\s+|a\s+)?(.+?)\s+(?:como\s+(?:comprad[oa]|pendente)|da\s+lista(?:\s+de\s+compras)?)$/i
+  );
+  if (toggleShopMatch?.[1]?.trim()) {
+    const isUnmark = clean.includes("desmarc") || clean.includes("pendente");
+    return callNluTool(
+      convex,
+      "toggle_shopping_list_item",
+      {
+        itemName: toggleShopMatch[1].trim(),
+        isPurchased: !isUnmark,
+      },
+      snapshot,
+      userId
+    );
   }
 
   // 1. Perguntas de consulta rápida (Q&A) e consultas de estoque
@@ -2588,11 +4607,19 @@ async function interpretSingleClauseNlu(
 
     const qty = qtyUnit.quantity;
     const unit = qtyUnit.unit || matchedItems[0]?.unit || "unidades";
+    const { totalPrice, supplier } = extractPurchasePriceAndSupplier(messageText);
 
     const exec = await executeAssistantToolCall({
       convex,
       toolName: "record_purchase",
-      args: { itemName, quantity: qty, unit, notes: messageText.trim() },
+      args: {
+        itemName,
+        quantity: qty,
+        unit,
+        totalPrice,
+        supplier,
+        notes: messageText.trim(),
+      },
       snapshot,
       userId,
     });
@@ -2998,6 +5025,7 @@ export async function processNaturalLanguageWithAI(params: {
         const actions: string[] = [];
         let nextState = "IDLE";
         let pendingActionPayload: string | undefined;
+        let newActivePetId: string | undefined;
 
         for (const call of functionCalls) {
           const exec = await executeAssistantToolCall({
@@ -3013,6 +5041,9 @@ export async function processNaturalLanguageWithAI(params: {
             nextState = exec.nextState;
             pendingActionPayload = exec.pendingActionPayload;
           }
+          if (exec.newActivePetId) {
+            newActivePetId = exec.newActivePetId;
+          }
         }
 
         return {
@@ -3021,6 +5052,7 @@ export async function processNaturalLanguageWithAI(params: {
           actionTaken: actions.length > 0 ? actions.join(",") : undefined,
           nextState,
           pendingActionPayload,
+          newActivePetId,
           usedGemini: true,
         };
       }

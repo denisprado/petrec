@@ -3,6 +3,7 @@ import { api } from "../../convex/_generated/api";
 import {
   buildPetContextSnapshot,
   executeAssistantToolCall,
+  parsePetCreationFromText,
   PendingItemCandidate,
   processNaturalLanguageWithAI,
 } from "./whatsappAiAssistant";
@@ -19,13 +20,26 @@ const NOTIFY_ACTIONS = new Set([
   "medication_administered",
   "medication_created",
   "medication_updated",
+  "medication_deleted",
   "purchase_recorded",
   "stock_adjusted",
+  "inventory_item_created",
+  "inventory_item_deleted",
+  "inventory_lead_time_updated",
+  "daily_consumption_updated",
   "weight_recorded",
   "clinical_note_recorded",
   "vaccine_recorded",
-  "inventory_item_created",
-  "daily_consumption_updated",
+  "appointment_recorded",
+  "health_record_updated",
+  "health_record_deleted",
+  "prescription_approved",
+  "prescription_rejected",
+  "shopping_item_added",
+  "shopping_item_toggled",
+  "pet_updated",
+  "routine_mode_updated",
+  "invite_created",
   "joined_pet_by_code",
 ]);
 
@@ -112,12 +126,20 @@ function parseFirstPetFromText(
   const weight = weightMatch ? parseFloat(weightMatch[1].replace(",", ".")) : undefined;
 
   let species = "Cão";
-  if (/\b(?:gata?|felin[oa])\b/.test(clean)) {
+  if (/\b(?:sarues?|gambas?)\b/.test(clean)) {
+    species = "Saruê";
+  } else if (/\b(?:gata?|felin[oa])\b/.test(clean)) {
     species = "Gato";
   } else if (/\b(?:ave|passar[oa]|calopsita|papagaio|periquito)\b/.test(clean)) {
     species = "Ave";
-  } else if (/\b(?:coelho|hamster|roedor|porquinho)\b/.test(clean)) {
+  } else if (/\b(?:coelho|hamster|roedor|porquinho|chinchila)\b/.test(clean)) {
     species = "Roedor";
+  } else if (/\b(?:jabuti|tartaruga|cagado|reptil|iguana)\b/.test(clean)) {
+    species = "Réptil";
+  } else if (/\b(?:furao|ferret)\b/.test(clean)) {
+    species = "Furão";
+  } else if (/\b(?:peixe|betta)\b/.test(clean)) {
+    species = "Peixe";
   }
 
   let extractedName = "";
@@ -506,22 +528,35 @@ async function executeWhatsAppMessage(
     }
 
     const parsedFirstPet = !mediaType
-      ? parseFirstPetFromText(text, currentState === "WAITING_FIRST_PET")
+      ? parsePetCreationFromText(text, []) ||
+        parseFirstPetFromText(text, currentState === "WAITING_FIRST_PET")
       : null;
 
     if (parsedFirstPet) {
+      const firstWeight =
+        "weightKg" in parsedFirstPet
+          ? parsedFirstPet.weightKg
+          : "weight" in parsedFirstPet
+          ? parsedFirstPet.weight
+          : undefined;
+      const firstBreed = "breed" in parsedFirstPet ? parsedFirstPet.breed : undefined;
+      const firstSex = "sex" in parsedFirstPet ? parsedFirstPet.sex : undefined;
       const speciesLower = parsedFirstPet.species.toLowerCase();
       const defaultPhoto = speciesLower.includes("gato")
         ? "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=500&auto=format&fit=crop&q=80"
         : speciesLower.includes("ave")
         ? "https://images.unsplash.com/photo-1522858547137-f1dcec554f55?w=500&auto=format&fit=crop&q=80"
+        : speciesLower.includes("saruê") || speciesLower.includes("roedor") || speciesLower.includes("furão")
+        ? "https://images.unsplash.com/photo-1425082661705-1834bfd09dca?w=500&auto=format&fit=crop&q=80"
         : "https://images.unsplash.com/photo-1552053831-71594a27632d?w=500&auto=format&fit=crop&q=80";
 
       const createdPet = await convex.mutation(api.pets.create, {
         userId: user._id,
         name: parsedFirstPet.name,
         species: parsedFirstPet.species,
-        weight: parsedFirstPet.weight,
+        breed: firstBreed,
+        sex: firstSex,
+        weight: firstWeight,
         photo: defaultPhoto,
         routineMode: "automatic_by_exception",
       });
@@ -542,7 +577,7 @@ async function executeWhatsAppMessage(
         replyText:
           `🎉 *Pet Cadastrado com Sucesso!*\n\n` +
           `🐾 *${parsedFirstPet.name}* (${parsedFirstPet.species}${
-            parsedFirstPet.weight ? ` • ${parsedFirstPet.weight} kg` : ""
+            firstWeight ? ` • ${firstWeight} kg` : ""
           }) já está ativo no seu PetRec!\n\n` +
           `🤖 *O que você já pode fazer por aqui agora:*\n` +
           `• _"Comprei 15kg de ração"_\n` +
@@ -1147,8 +1182,8 @@ async function executeWhatsAppMessage(
       : "✍️ *Modo Manual Ativo*";
     const switchPetLine =
       pets.length > 1
-        ? `9️⃣ *Trocar Pet* — Alternar entre seus ${pets.length} pets\n`
-        : "";
+        ? `9️⃣ *Trocar / Gerenciar Pets* — Alternar entre seus ${pets.length} pets ou cadastrar novo\n`
+        : `9️⃣ *Meus Pets* — Ver código de compartilhamento ou cadastrar novo pet\n`;
 
     return {
       success: true,
@@ -1159,7 +1194,7 @@ async function executeWhatsAppMessage(
         `🐾 *Menu PetRec — ${currentPet.name}*\n` +
         `Status: ${routineBadge}\n\n` +
         `1️⃣ *Hoje* — Medicamentos e rotina do dia\n` +
-        `2️⃣ *Estoque* — Nível de ração e previsão de compra\n` +
+        `2️⃣ *Estoque* — Nível de ração, remédios e previsão\n` +
         `3️⃣ *Remédio* — ${
           isRoutineAuto
             ? "Registrar Exceção / Pular dose (não dei)"
@@ -1173,10 +1208,14 @@ async function executeWhatsAppMessage(
         `5️⃣ *Vacinas* — Próximos reforços e imunização\n` +
         `6️⃣ *Compras* — Lista de itens para comprar\n` +
         `7️⃣ *Peso* — Consultar ou registrar peso\n` +
-        `8️⃣ *Prontuário* — Histórico clínico e consultas\n` +
+        `8️⃣ *Prontuário* — Histórico clínico e notas\n` +
         `${switchPetLine}\n` +
         `🤖 _Você também pode conversar naturalmente:_\n` +
-        `_"deixou metade do pote"_, _"comprei 15kg de ração"_, _"cuspiu o comprimido das 8h"_ ou _"quando a ração vai acabar?"_!`,
+        `• _"Cadastre o pet Serelepe, saruê"_, _"Qual o código do ${currentPet.name}?"_\n` +
+        `• _"Agendar consulta dia 25/11 às 14:30 com Dra. Camila"_\n` +
+        `• _"Comprei 15kg de ração por R$ 240 na Cobasi"_\n` +
+        `• _"Quais remédios toma?"_, _"Muda horário do [remédio] para 20h"_\n` +
+        `• _"Adiciona coleira na lista de compras"_, _"Silenciar notificações"_!`,
       currentState: "IDLE",
     };
   }
@@ -1185,7 +1224,6 @@ async function executeWhatsAppMessage(
   if (
     normalizedCmd === "1" ||
     normalizedCmd === "hoje" ||
-    normalizedCmd === "agenda" ||
     normalizedCmd === "tarefas"
   ) {
     const todayAdms = await convex.query(
@@ -1558,16 +1596,23 @@ async function executeWhatsAppMessage(
     normalizedCmd === "mudar pet" ||
     normalizedCmd === "outro pet" ||
     normalizedCmd === "pets" ||
-    normalizedCmd.startsWith("trocar para ") ||
-    normalizedCmd.startsWith("mudar para ")
+    ((normalizedCmd.startsWith("trocar para ") || normalizedCmd.startsWith("mudar para ")) &&
+      !/\bmodo\b/.test(normalizedCmd) &&
+      (mentionedPets.length > 0 || /\bpet\b/.test(normalizedCmd)))
   ) {
     if (pets.length <= 1) {
+      const code = currentPet.shareCode || `PET-${String(currentPet._id).slice(-6).toUpperCase()}`;
       return {
         success: true,
         senderPhone: cleanPhone,
         userFound: true,
         userName: user.name,
-        replyText: `🐾 Você possui apenas *${currentPet.name}* cadastrado no momento.`,
+        replyText:
+          `🐾 *Seu Pet em Foco:* *${currentPet.name}* (${currentPet.species}${
+            currentPet.weight ? ` • ${currentPet.weight} kg` : ""
+          })\n` +
+          `🔑 Código de compartilhamento: \`${code}\`\n\n` +
+          `💡 _Para cadastrar mais um pet, envie por exemplo: "Cadastre o pet Luna, gata, 4kg" ou "Cadastre Serelepe, meu saruê de estimação"._`,
         currentState: "IDLE",
       };
     }
@@ -1643,21 +1688,30 @@ async function executeWhatsAppMessage(
   });
 
   if (aiResult.handled) {
+    if (aiResult.actionTaken === "pet_deleted") {
+      tracker.activePetId = aiResult.newActivePetId;
+    } else if (aiResult.actionTaken === "pet_created" && aiResult.newActivePetId) {
+      tracker.activePetId = aiResult.newActivePetId;
+    }
+
     if (aiResult.nextState !== "IDLE" && aiResult.pendingActionPayload) {
       await convex.mutation(api.whatsapp.updateSession, {
         userId: user._id,
-        currentPetId: currentPet._id,
+        currentPetId: (tracker.activePetId || currentPet._id) as any,
         state: aiResult.nextState,
         pendingActionPayload: aiResult.pendingActionPayload,
       });
     }
+
+    const skipSwitchPrefix =
+      aiResult.actionTaken === "pet_created" || aiResult.actionTaken === "pet_deleted";
 
     return {
       success: true,
       senderPhone: cleanPhone,
       userFound: true,
       userName: user.name,
-      replyText: `${autoSwitchNotice}${aiResult.replyText}`,
+      replyText: `${skipSwitchPrefix ? "" : autoSwitchNotice}${aiResult.replyText}`,
       actionTaken: aiResult.actionTaken,
       currentState: aiResult.nextState,
     };
