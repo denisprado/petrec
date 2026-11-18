@@ -23,6 +23,14 @@ export async function GET(request: Request) {
       return NextResponse.json({ medications: [], administrationsToday: [] });
     }
 
+    try {
+      await convex.mutation(api.medications.syncRoutineMedications, {
+        petId: targetPetId as any,
+      });
+    } catch (syncErr) {
+      console.warn("Medications GET sync warning:", syncErr);
+    }
+
     const [medications, administrationsToday] = await Promise.all([
       convex.query(api.medications.listByPet, { petId: targetPetId as any }),
       convex.query(api.medications.getAdministrationsToday, { petId: targetPetId as any }),
@@ -97,6 +105,12 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       medicationId: medId,
+      medication: {
+        id: medId,
+        name: name.trim(),
+        dosage: dosage || undefined,
+        unit: unit || "comprimidos",
+      },
     });
   } catch (error: any) {
     console.error("Medication POST error:", error);
@@ -132,26 +146,40 @@ export async function PUT(request: Request) {
     }
 
     const parsedTimes = Array.isArray(times) && times.length > 0 ? times : ["08:00"];
+    const parsedQty = Number(currentQuantity);
 
-    await convex.mutation(api.medications.update, {
+    const updatedMed = await convex.mutation(api.medications.update, {
       medicationId: medicationId as any,
       userId: userId as any,
       name: name.trim(),
-      activeIngredient: activeIngredient || undefined,
-      presentation: presentation || undefined,
-      dosage: dosage || undefined,
+      activeIngredient: activeIngredient ? String(activeIngredient).trim() : "",
+      presentation: presentation ? String(presentation).trim() : "",
+      dosage: dosage ? String(dosage).trim() : "",
       unit: unit || undefined,
-      instructions: instructions || undefined,
-      veterinarian: veterinarian || undefined,
+      instructions: instructions ? String(instructions).trim() : "",
+      veterinarian: veterinarian ? String(veterinarian).trim() : "",
       times: parsedTimes,
       quantityPerAdministration: Number(quantityPerAdministration) || 1,
-      currentQuantity: Number(currentQuantity) || 0,
+      currentQuantity: Number.isFinite(parsedQty) ? parsedQty : 0,
       purchaseLeadTimeDays: Number(purchaseLeadTimeDays) || 5,
-      notes: notes || undefined,
+      notes: notes ? String(notes).trim() : "",
     });
+
+    const targetPetId = updatedMed?.petId || body.petId;
+    if (targetPetId) {
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(targetPetId),
+        actorUserId: String(userId),
+        summary: `✏️ *Medicamento Atualizado:* ${name.trim()}${
+          dosage ? ` (${dosage})` : ""
+        } — horários: ${parsedTimes.join(", ")}`,
+      });
+    }
 
     return NextResponse.json({
       success: true,
+      medication: updatedMed || { id: medicationId, name: name.trim() },
       message: "Medicamento atualizado com sucesso!",
     });
   } catch (error: any) {
@@ -173,10 +201,19 @@ export async function DELETE(request: Request) {
   }
 
   try {
-    await convex.mutation(api.medications.remove, {
+    const result = await convex.mutation(api.medications.remove, {
       medicationId: medicationId as any,
       userId: userId as any,
     });
+
+    if (result?.deleted && result?.petId) {
+      await notifyPetMembersOnWhatsApp({
+        convex,
+        petId: String(result.petId),
+        actorUserId: String(userId),
+        summary: `🗑️ *Medicamento Excluído:* ${result.medicationName || "Medicamento"}`,
+      });
+    }
 
     return NextResponse.json({
       success: true,

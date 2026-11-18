@@ -46,6 +46,13 @@ function safeFormat(dateVal: any, formatPattern: string, options?: any): string 
   }
 }
 
+function formatScheduledTime(dateVal: any): string {
+  if (!dateVal) return "--:--";
+  const match = String(dateVal).match(/T(\d{2}:\d{2})/);
+  if (match) return match[1];
+  return safeFormat(dateVal, "HH:mm") || "--:--";
+}
+
 export default function DashboardPage() {
   const {
     currentUser,
@@ -892,9 +899,12 @@ export default function DashboardPage() {
             ) : (
               <div className="space-y-3">
                 {administrations.map((adm: any) => {
-                  const timeStr = safeFormat(adm.scheduledAt, "HH:mm") || "--:--";
+                  const timeStr = formatScheduledTime(adm.scheduledAt);
                   const isDone = adm.status === "administered";
                   const isSkipped = adm.status === "skipped";
+                  const isRoutineAuto =
+                    Boolean(adm.notes?.includes("Rotina regular")) ||
+                    adm.administeredAt === adm.scheduledAt;
 
                   return (
                     <div
@@ -923,6 +933,11 @@ export default function DashboardPage() {
                         <div>
                           <div className="font-bold text-slate-900 text-sm">
                             {adm.medication?.name || "Medicamento"}
+                            {adm.medication?.dosage ? (
+                              <span className="ml-1.5 text-xs font-semibold text-slate-500">
+                                ({adm.medication.dosage})
+                              </span>
+                            ) : null}
                           </div>
                           <div className="text-xs text-slate-500">
                             Dose: {adm.quantity} {adm.medication?.unit || "dose"}
@@ -935,7 +950,10 @@ export default function DashboardPage() {
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               <span>
                                 Administrado por {adm.administeredBy?.name || "Tutor"} às{" "}
-                                {safeFormat(adm.administeredAt || adm.scheduledAt, "HH:mm") || "--:--"}
+                                {isRoutineAuto
+                                  ? formatScheduledTime(adm.scheduledAt)
+                                  : safeFormat(adm.administeredAt || adm.scheduledAt, "HH:mm") ||
+                                    "--:--"}
                               </span>
                             </div>
                           )}

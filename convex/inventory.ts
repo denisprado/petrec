@@ -161,7 +161,31 @@ export const updateItem = mutation({
     if (args.purchaseLeadTimeDays !== undefined) patch.purchaseLeadTimeDays = args.purchaseLeadTimeDays;
     if (args.notes !== undefined) patch.notes = args.notes;
 
+    const nextQty =
+      args.currentQuantity !== undefined ? args.currentQuantity : existing.currentQuantity;
+    const nextDaily =
+      args.dailyConsumption !== undefined ? args.dailyConsumption : existing.dailyConsumption;
+    const nextLeadTime =
+      args.purchaseLeadTimeDays !== undefined
+        ? args.purchaseLeadTimeDays
+        : existing.purchaseLeadTimeDays;
+
+    const computed = computeInventoryStatus(nextQty, nextDaily, nextLeadTime);
+    patch.status = computed.status;
+    patch.estimatedEndDate = computed.estimatedEndDate;
+    if (computed.status === "OK") {
+      patch.lastLowStockAlertDate = undefined;
+      patch.lastLowStockAlertStatus = undefined;
+    }
+
     await ctx.db.patch(args.id, patch);
+
+    if (existing.medicationId && args.unit !== undefined) {
+      const med = await ctx.db.get(existing.medicationId);
+      if (med) {
+        await ctx.db.patch(med._id, { unit: args.unit });
+      }
+    }
 
     if (args.userId) {
       await ctx.db.insert("activityLogs", {
@@ -185,6 +209,26 @@ export const deleteItem = mutation({
   handler: async (ctx, args) => {
     const existing = await ctx.db.get(args.id);
     if (!existing) throw new Error("Item de estoque não encontrado");
+
+    // Se o item de estoque estiver vinculado a um medicamento, remove também o medicamento e seu cronograma/administrações
+    if (existing.medicationId) {
+      const med = await ctx.db.get(existing.medicationId);
+      if (med) {
+        const adms = await ctx.db
+          .query("medicationAdministrations")
+          .withIndex("by_medication", (q) => q.eq("medicationId", med._id))
+          .collect();
+        for (const a of adms) await ctx.db.delete(a._id);
+
+        const schedules = await ctx.db
+          .query("medicationSchedules")
+          .withIndex("by_medication", (q) => q.eq("medicationId", med._id))
+          .collect();
+        for (const s of schedules) await ctx.db.delete(s._id);
+
+        await ctx.db.delete(med._id);
+      }
+    }
 
     // Deletar transações associadas
     const txs = await ctx.db

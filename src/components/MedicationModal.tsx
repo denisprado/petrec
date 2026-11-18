@@ -43,6 +43,28 @@ const PRESENTATION_OPTIONS = [
 
 const UNIT_OPTIONS = ["comprimidos", "ml", "gotas", "doses", "cápsulas", "unidades"];
 
+function parseScheduleTimes(rawTimes: any): string[] {
+  if (Array.isArray(rawTimes)) {
+    const cleaned = rawTimes.map((t) => String(t).trim()).filter(Boolean);
+    return cleaned.length > 0 ? cleaned : ["08:00"];
+  }
+  if (typeof rawTimes === "string") {
+    try {
+      const parsed = JSON.parse(rawTimes);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((t) => String(t).trim()).filter(Boolean);
+      }
+    } catch {
+      const split = rawTimes
+        .split(/[,\s]+/)
+        .map((t) => t.trim())
+        .filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+      if (split.length > 0) return split;
+    }
+  }
+  return ["08:00"];
+}
+
 export function MedicationModal({
   isOpen,
   onClose,
@@ -90,12 +112,7 @@ export function MedicationModal({
       const schedule = initialData.schedules?.[0];
       if (schedule) {
         setQuantityPerAdmin(String(schedule.quantityPerAdministration || 1));
-        try {
-          const parsed = JSON.parse(schedule.times || '["08:00"]');
-          setTimes(Array.isArray(parsed) && parsed.length > 0 ? parsed : ["08:00"]);
-        } catch {
-          setTimes(["08:00"]);
-        }
+        setTimes(parseScheduleTimes(schedule.times));
       } else {
         setQuantityPerAdmin("1");
         setTimes(["08:00"]);
@@ -191,20 +208,28 @@ export function MedicationModal({
         });
 
         const data = await res.json();
-        if (res.ok && data.medication) {
+        if (res.ok && (data.success || data.medication || data.medicationId)) {
           triggerRefresh();
-          onSuccess?.(data.medication);
+          onSuccess?.(
+            data.medication || {
+              id: data.medicationId,
+              name: name.trim(),
+            }
+          );
           onClose();
         } else {
           setErrorMsg(data.error || "Erro ao cadastrar medicamento.");
         }
       } else {
         // Edit mode
+        const medId = initialData?.id || initialData?._id;
+        const parsedQty = parseFloat(stockQuantity);
         const res = await fetch("/api/medications", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            medicationId: initialData?.id,
+            medicationId: medId,
+            petId: activePetId,
             userId: currentUser.id,
             name: name.trim(),
             activeIngredient: activeIngredient.trim() || null,
@@ -213,7 +238,7 @@ export function MedicationModal({
             unit,
             quantityPerAdministration: parseFloat(quantityPerAdmin) || 1,
             times,
-            currentQuantity: parseFloat(stockQuantity) || 0,
+            currentQuantity: Number.isFinite(parsedQty) ? parsedQty : 0,
             purchaseLeadTimeDays: parseInt(leadTimeDays) || 5,
             instructions: instructions.trim() || null,
             veterinarian: veterinarian.trim() || null,
@@ -222,9 +247,14 @@ export function MedicationModal({
         });
 
         const data = await res.json();
-        if (res.ok && data.medication) {
+        if (res.ok && (data.success || data.medication)) {
           triggerRefresh();
-          onSuccess?.(data.medication);
+          onSuccess?.(
+            data.medication || {
+              id: medId,
+              name: name.trim(),
+            }
+          );
           onClose();
         } else {
           setErrorMsg(data.error || "Erro ao atualizar medicamento.");
@@ -238,11 +268,12 @@ export function MedicationModal({
   };
 
   const handleDelete = async () => {
-    if (!initialData?.id) return;
+    const medId = initialData?.id || initialData?._id;
+    if (!medId) return;
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/medications?medicationId=${initialData.id}&userId=${currentUser.id}`,
+        `/api/medications?medicationId=${medId}&userId=${currentUser.id}`,
         { method: "DELETE" }
       );
       const data = await res.json();
@@ -482,7 +513,7 @@ export function MedicationModal({
                 </label>
                 <input
                   type="number"
-                  step="1"
+                  step="any"
                   min="0"
                   value={stockQuantity}
                   onChange={(e) => setStockQuantity(e.target.value)}

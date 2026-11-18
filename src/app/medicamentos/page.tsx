@@ -1,21 +1,20 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useApp } from "@/context/AppContext";
 import {
   Pill,
   Clock,
   CheckCircle2,
-  AlertCircle,
   Plus,
-  Calendar,
-  User,
-  ShieldCheck,
   Edit2,
   Trash2,
   AlertTriangle,
   Package,
   Sparkles,
+  Search,
+  Filter,
+  RotateCcw,
 } from "lucide-react";
 import { format, isValid } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -33,6 +32,48 @@ function safeFormat(dateVal: any, formatPattern: string, options?: any): string 
   }
 }
 
+function formatScheduledTime(dateVal: any): string {
+  if (!dateVal) return "--:--";
+  const match = String(dateVal).match(/T(\d{2}:\d{2})/);
+  if (match) return match[1];
+  return safeFormat(dateVal, "HH:mm") || "--:--";
+}
+
+function parseScheduleTimes(rawTimes: any): string[] {
+  if (Array.isArray(rawTimes)) {
+    return rawTimes.map((t) => String(t).trim()).filter(Boolean);
+  }
+  if (typeof rawTimes === "string") {
+    try {
+      const parsed = JSON.parse(rawTimes);
+      if (Array.isArray(parsed)) {
+        return parsed.map((t) => String(t).trim()).filter(Boolean);
+      }
+    } catch {
+      return rawTimes
+        .split(/[,\s]+/)
+        .map((t) => t.trim())
+        .filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+    }
+  }
+  return [];
+}
+
+function getTimePeriod(timeStr: string): "morning" | "afternoon" | "night" {
+  const hour = parseInt((timeStr || "").split(":")[0] || "0", 10);
+  if (hour >= 5 && hour < 12) return "morning";
+  if (hour >= 12 && hour < 18) return "afternoon";
+  return "night";
+}
+
+function normalizeSearch(value: any): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 export default function MedicamentosPage() {
   const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
   const [medications, setMedications] = useState<any[]>([]);
@@ -40,6 +81,15 @@ export default function MedicamentosPage() {
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [routineMode, setRoutineMode] = useState<string>("automatic_by_exception");
+
+  // Filtros e ordenação
+  const [searchQuery, setSearchQuery] = useState("");
+  const [admStatusFilter, setAdmStatusFilter] = useState<"all" | "pending" | "administered" | "skipped">("all");
+  const [admPeriodFilter, setAdmPeriodFilter] = useState<"all" | "morning" | "afternoon" | "night">("all");
+  const [medStatusFilter, setMedStatusFilter] = useState<"all" | "active" | "pending_tutor_approval">("all");
+  const [stockFilter, setStockFilter] = useState<"all" | "low" | "ok">("all");
+  const [presentationFilter, setPresentationFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"name_asc" | "next_time" | "lowest_stock">("name_asc");
 
   // Modal de criação / edição
   const [modalOpen, setModalOpen] = useState(false);
@@ -62,9 +112,13 @@ export default function MedicamentosPage() {
 
       setLoading(true);
       try {
+        const dashUrl = currentUser?.id
+          ? `/api/dashboard?petId=${petIdToFetch}&userId=${currentUser.id}`
+          : `/api/dashboard?petId=${petIdToFetch}`;
+
         const [medRes, dashRes] = await Promise.all([
           fetch(`/api/medications?petId=${petIdToFetch}`),
-          fetch(`/api/dashboard?petId=${petIdToFetch}`),
+          fetch(dashUrl),
         ]);
         if (medRes.ok) {
           const data = await medRes.json();
@@ -96,7 +150,7 @@ export default function MedicamentosPage() {
     return () => {
       isCancelled = true;
     };
-  }, [activePetId, pets, refreshTrigger]);
+  }, [activePetId, pets, currentUser?.id, refreshTrigger, setActivePetId]);
 
   const handleToggleRoutineMode = async (newMode: "manual" | "automatic_by_exception") => {
     const petId = activePetId || pets[0]?.id;
@@ -180,6 +234,156 @@ export default function MedicamentosPage() {
       setDeleting(false);
     }
   };
+
+  const normalizedQuery = normalizeSearch(searchQuery);
+
+  const hasActiveFilters =
+    Boolean(normalizedQuery) ||
+    admStatusFilter !== "all" ||
+    admPeriodFilter !== "all" ||
+    medStatusFilter !== "all" ||
+    stockFilter !== "all" ||
+    presentationFilter !== "all" ||
+    sortBy !== "name_asc";
+
+  const clearAllFilters = () => {
+    setSearchQuery("");
+    setAdmStatusFilter("all");
+    setAdmPeriodFilter("all");
+    setMedStatusFilter("all");
+    setStockFilter("all");
+    setPresentationFilter("all");
+    setSortBy("name_asc");
+  };
+
+  const matchesMedSearch = (med: any) => {
+    if (!normalizedQuery) return true;
+    const haystack = normalizeSearch(
+      [
+        med?.name,
+        med?.activeIngredient,
+        med?.dosage,
+        med?.instructions,
+        med?.veterinarian,
+        med?.presentation,
+        med?.notes,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+    return haystack.includes(normalizedQuery);
+  };
+
+  const administrationsBySearchAndPeriod = useMemo(() => {
+    return administrations.filter((adm) => {
+      if (normalizedQuery) {
+        const admHaystack = normalizeSearch(
+          [
+            adm.medication?.name,
+            adm.medication?.activeIngredient,
+            adm.medication?.dosage,
+            adm.medication?.instructions,
+            adm.medication?.veterinarian,
+            adm.notes,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        );
+        if (!admHaystack.includes(normalizedQuery)) return false;
+      }
+
+      if (admPeriodFilter !== "all") {
+        const timeStr = formatScheduledTime(adm.scheduledAt);
+        if (getTimePeriod(timeStr) !== admPeriodFilter) return false;
+      }
+
+      return true;
+    });
+  }, [administrations, normalizedQuery, admPeriodFilter]);
+
+  const admCounts = useMemo(() => {
+    let pending = 0;
+    let administered = 0;
+    let skipped = 0;
+    for (const adm of administrationsBySearchAndPeriod) {
+      if (adm.status === "administered") administered++;
+      else if (adm.status === "skipped") skipped++;
+      else pending++;
+    }
+    return {
+      all: administrationsBySearchAndPeriod.length,
+      pending,
+      administered,
+      skipped,
+    };
+  }, [administrationsBySearchAndPeriod]);
+
+  const filteredAdministrations = useMemo(() => {
+    return administrationsBySearchAndPeriod.filter((adm) => {
+      if (admStatusFilter === "pending") {
+        return adm.status !== "administered" && adm.status !== "skipped";
+      }
+      if (admStatusFilter === "administered") {
+        return adm.status === "administered";
+      }
+      if (admStatusFilter === "skipped") {
+        return adm.status === "skipped";
+      }
+      return true;
+    });
+  }, [administrationsBySearchAndPeriod, admStatusFilter]);
+
+  const availablePresentations = useMemo(() => {
+    const set = new Set<string>();
+    for (const med of medications) {
+      set.add((med.presentation || "Comprimido").trim());
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [medications]);
+
+  const filteredMedications = useMemo(() => {
+    const filtered = medications.filter((med) => {
+      if (!matchesMedSearch(med)) return false;
+
+      if (medStatusFilter !== "all" && med.status !== medStatusFilter) {
+        return false;
+      }
+
+      const invStatus = med.inventoryItem?.status;
+      if (stockFilter === "low") {
+        if (!invStatus || invStatus === "OK") return false;
+      } else if (stockFilter === "ok") {
+        if (!invStatus || invStatus !== "OK") return false;
+      }
+
+      if (presentationFilter !== "all") {
+        const pres = (med.presentation || "Comprimido").trim();
+        if (pres !== presentationFilter) return false;
+      }
+
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === "next_time") {
+        const tA = parseScheduleTimes(a.schedules?.[0]?.times)[0] || "99:99";
+        const tB = parseScheduleTimes(b.schedules?.[0]?.times)[0] || "99:99";
+        if (tA !== tB) return tA.localeCompare(tB);
+      } else if (sortBy === "lowest_stock") {
+        const qA = a.inventoryItem?.currentQuantity ?? Number.MAX_SAFE_INTEGER;
+        const qB = b.inventoryItem?.currentQuantity ?? Number.MAX_SAFE_INTEGER;
+        if (qA !== qB) return qA - qB;
+      }
+      return (a.name || "").localeCompare(b.name || "", "pt-BR");
+    });
+  }, [
+    medications,
+    normalizedQuery,
+    medStatusFilter,
+    stockFilter,
+    presentationFilter,
+    sortBy,
+  ]);
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 space-y-6">
@@ -296,9 +500,34 @@ export default function MedicamentosPage() {
         </div>
       </div>
 
+      {/* Barra Global de Busca e Limpeza de Filtros */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-3.5 sm:p-4 shadow-2xs flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Buscar medicamento por nome, dosagem, princípio ativo, veterinário ou instrução..."
+            className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-emerald-600 focus:border-transparent transition"
+          />
+        </div>
+
+        {hasActiveFilters && (
+          <button
+            type="button"
+            onClick={clearAllFilters}
+            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Limpar filtros</span>
+          </button>
+        )}
+      </div>
+
       {/* Seção 1: Programação de Hoje (Administrações) */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs p-4 sm:p-5">
-        <div className="flex items-center justify-between mb-4">
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Clock className="w-5 h-5 text-emerald-600" />
             <h2 className="text-lg font-bold text-slate-900">
@@ -310,16 +539,83 @@ export default function MedicamentosPage() {
           </span>
         </div>
 
+        {/* Filtros de Administrações de Hoje */}
+        {administrations.length > 0 && (
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-1 border-b border-slate-100">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {[
+                { key: "all" as const, label: "Todas", count: admCounts.all },
+                { key: "pending" as const, label: "Pendentes", count: admCounts.pending },
+                { key: "administered" as const, label: "Administradas", count: admCounts.administered },
+                { key: "skipped" as const, label: "Puladas", count: admCounts.skipped },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setAdmStatusFilter(tab.key)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                    admStatusFilter === tab.key
+                      ? "bg-emerald-600 text-white shadow-2xs"
+                      : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                      admStatusFilter === tab.key
+                        ? "bg-white/20 text-white"
+                        : "bg-white text-slate-600"
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <select
+                aria-label="Filtrar administrações por período"
+                value={admPeriodFilter}
+                onChange={(e) => setAdmPeriodFilter(e.target.value as any)}
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-emerald-600"
+              >
+                <option value="all">Todos os períodos</option>
+                <option value="morning">Manhã (05h–11h59)</option>
+                <option value="afternoon">Tarde (12h–17h59)</option>
+                <option value="night">Noite (18h–04h59)</option>
+              </select>
+            </div>
+          </div>
+        )}
+
         {administrations.length === 0 ? (
           <p className="text-sm text-slate-500 py-3">
             Nenhuma dose de medicamento programada para hoje.
           </p>
+        ) : filteredAdministrations.length === 0 ? (
+          <div className="py-5 text-center space-y-2">
+            <p className="text-sm text-slate-500">
+              Nenhuma dose encontrada para os filtros selecionados.
+            </p>
+            <button
+              type="button"
+              onClick={clearAllFilters}
+              className="text-xs font-bold text-emerald-700 hover:underline cursor-pointer"
+            >
+              Limpar filtros
+            </button>
+          </div>
         ) : (
           <div className="space-y-3">
-            {administrations.map((adm) => {
-              const timeStr = safeFormat(adm.scheduledAt, "HH:mm") || "--:--";
+            {filteredAdministrations.map((adm) => {
+              const timeStr = formatScheduledTime(adm.scheduledAt);
               const isDone = adm.status === "administered";
               const isSkipped = adm.status === "skipped";
+              const isRoutineAuto =
+                Boolean(adm.notes?.includes("Rotina regular")) ||
+                adm.administeredAt === adm.scheduledAt;
 
               return (
                 <div
@@ -334,7 +630,7 @@ export default function MedicamentosPage() {
                 >
                   <div className="flex items-center gap-3">
                     <div
-                      className={`w-14 text-center py-2 rounded-xl text-sm font-black ${
+                      className={`w-14 text-center py-2 rounded-xl text-sm font-black shrink-0 ${
                         isDone
                           ? "bg-emerald-600 text-white"
                           : isSkipped
@@ -346,9 +642,14 @@ export default function MedicamentosPage() {
                     </div>
 
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-slate-900 text-base">
                           {adm.medication?.name || "Medicamento"}
+                          {adm.medication?.dosage ? (
+                            <span className="ml-1.5 text-xs font-semibold text-slate-500">
+                              ({adm.medication.dosage})
+                            </span>
+                          ) : null}
                         </span>
                         {isDone ? (
                           <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
@@ -376,11 +677,14 @@ export default function MedicamentosPage() {
                           <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                           <span>
                             Administrado por <strong>{adm.administeredBy?.name || "Tutor"}</strong> às{" "}
-                            {safeFormat(
-                              adm.administeredAt || adm.scheduledAt,
-                              "HH:mm",
-                              { locale: ptBR }
-                            ) || "--:--"}
+                            {isRoutineAuto
+                              ? formatScheduledTime(adm.scheduledAt)
+                              : safeFormat(
+                                  adm.administeredAt || adm.scheduledAt,
+                                  "HH:mm",
+                                  { locale: ptBR }
+                                ) || "--:--"}
+                            {adm.notes?.includes("Rotina regular") ? " (Rotina regular)" : ""}
                           </span>
                         </div>
                       )}
@@ -438,14 +742,88 @@ export default function MedicamentosPage() {
 
       {/* Seção 2: Lista Completa de Medicamentos Cadastrados */}
       <section className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <h2 className="text-lg font-bold text-slate-900">
             Medicamentos Cadastrados para este Pet
           </h2>
           <span className="text-xs font-semibold text-slate-500">
-            Total: {medications.length} {medications.length === 1 ? "medicamento" : "medicamentos"}
+            {filteredMedications.length !== medications.length
+              ? `Exibindo ${filteredMedications.length} de ${medications.length} medicamentos`
+              : `Total: ${medications.length} ${medications.length === 1 ? "medicamento" : "medicamentos"}`}
           </span>
         </div>
+
+        {/* Barra de Filtros da Lista de Medicamentos */}
+        {medications.length > 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Status
+              </label>
+              <select
+                aria-label="Filtrar por status do medicamento"
+                value={medStatusFilter}
+                onChange={(e) => setMedStatusFilter(e.target.value as any)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-emerald-600"
+              >
+                <option value="all">Todos os status</option>
+                <option value="active">Ativos</option>
+                <option value="pending_tutor_approval">Aguardando Aprovação</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Situação do Estoque
+              </label>
+              <select
+                aria-label="Filtrar por situação do estoque"
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value as any)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-emerald-600"
+              >
+                <option value="all">Qualquer estoque</option>
+                <option value="low">Estoque em Alerta / Baixo</option>
+                <option value="ok">Estoque OK</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Apresentação
+              </label>
+              <select
+                aria-label="Filtrar por apresentação"
+                value={presentationFilter}
+                onChange={(e) => setPresentationFilter(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-emerald-600"
+              >
+                <option value="all">Todas apresentações</option>
+                {availablePresentations.map((pres) => (
+                  <option key={pres} value={pres}>
+                    {pres}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Ordenar por
+              </label>
+              <select
+                aria-label="Ordenar medicamentos"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as any)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:outline-emerald-600"
+              >
+                <option value="name_asc">Nome (A–Z)</option>
+                <option value="next_time">Próximo horário</option>
+                <option value="lowest_stock">Menor estoque</option>
+              </select>
+            </div>
+          </div>
+        )}
 
         {medications.length === 0 ? (
           <div className="bg-white rounded-3xl border border-slate-200 p-8 text-center space-y-3">
@@ -470,9 +848,23 @@ export default function MedicamentosPage() {
               </button>
             )}
           </div>
+        ) : filteredMedications.length === 0 ? (
+          <div className="bg-white rounded-3xl border border-slate-200 p-8 text-center space-y-3">
+            <p className="text-sm font-semibold text-slate-700">
+              Nenhum medicamento corresponde aos filtros selecionados.
+            </p>
+            <button
+              type="button"
+              onClick={clearAllFilters}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Limpar filtros</span>
+            </button>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {medications.map((med) => (
+            {filteredMedications.map((med) => (
               <div
                 key={med.id}
                 className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3 hover:border-slate-300 transition flex flex-col justify-between"
@@ -481,7 +873,7 @@ export default function MedicamentosPage() {
                   {/* Top Bar do Card */}
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <h3 className="font-black text-slate-900 text-base flex items-center gap-2">
+                      <h3 className="font-black text-slate-900 text-base flex items-center gap-2 flex-wrap">
                         <span>{med.name}</span>
                         {med.status === "pending_tutor_approval" && (
                           <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full border border-amber-200">
@@ -491,12 +883,12 @@ export default function MedicamentosPage() {
                       </h3>
                       <div className="text-xs text-slate-500">
                         {med.activeIngredient && `Princípio ativo: ${med.activeIngredient} • `}
-                        {med.presentation || "Comprimidos"}
+                        {med.presentation || "Comprimido"}
                       </div>
                     </div>
 
                     {/* Ações (Editar / Excluir) */}
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
                       {permissions.canManageMedications && (
                         <>
                           <button
@@ -527,7 +919,8 @@ export default function MedicamentosPage() {
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-slate-600">Concentração / Dose:</span>
                       <span className="font-bold text-slate-800">
-                        {med.dosage || "1 dose padrão"}
+                        {med.dosage || "Não informada"} •{" "}
+                        {med.schedules?.[0]?.quantityPerAdministration || 1} {med.unit || "un"}/dose
                       </span>
                     </div>
 
@@ -545,7 +938,7 @@ export default function MedicamentosPage() {
 
                     {/* Estoque e Status */}
                     {med.inventoryItem && (
-                      <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2">
+                      <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 flex-wrap">
                         <div className="flex items-center gap-1.5">
                           <Package className="w-3.5 h-3.5 text-slate-500" />
                           <span className="text-slate-700 font-semibold">
@@ -568,14 +961,22 @@ export default function MedicamentosPage() {
                       Horários Programados
                     </span>
                     <div className="flex flex-wrap gap-1.5">
-                      {med.schedules?.map((sch: any) => {
-                        let times: string[] = [];
-                        try {
-                          times = JSON.parse(sch.times || "[]");
-                        } catch {
-                          times = [];
+                      {(() => {
+                        const allTimes: string[] = Array.from(
+                          new Set<string>(
+                            (med.schedules || []).flatMap((sch: any): string[] =>
+                              parseScheduleTimes(sch.times)
+                            )
+                          )
+                        ).sort();
+                        if (allTimes.length === 0) {
+                          return (
+                            <span className="text-xs text-slate-400 italic">
+                              Sem horários cadastrados
+                            </span>
+                          );
                         }
-                        return times.map((t: string) => (
+                        return allTimes.map((t: string) => (
                           <span
                             key={t}
                             className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg text-xs font-bold"
@@ -584,7 +985,7 @@ export default function MedicamentosPage() {
                             <span>{t}</span>
                           </span>
                         ));
-                      })}
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -607,7 +1008,7 @@ export default function MedicamentosPage() {
                 Excluir &quot;{deleteConfirmMed.name}&quot;?
               </h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Esta ação removerá o medicamento, seu cronograma de horários e o item de estoque correspondente. O histórico de administrações passadas será mantido para auditoria.
+                Esta ação removerá o medicamento, seu cronograma de horários, as doses associadas e o item de estoque vinculado.
               </p>
             </div>
 
