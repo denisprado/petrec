@@ -80,3 +80,54 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
+
+export async function PUT(request: Request) {
+  try {
+    const body = await request.json();
+    const { noteId, userId, content, visibility } = body;
+
+    if (!noteId || !content || !String(content).trim()) {
+      return NextResponse.json(
+        { error: "noteId e content são obrigatórios." },
+        { status: 400 }
+      );
+    }
+
+    await convex.mutation(api.health.updateClinicalNote, {
+      noteId: noteId as any,
+      userId: userId ? (userId as any) : undefined,
+      content: String(content).trim(),
+      visibility: visibility ? String(visibility) : undefined,
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("Clinical notes PUT error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const noteId = searchParams.get("noteId");
+    const userId = searchParams.get("userId");
+
+    if (!noteId) {
+      return NextResponse.json(
+        { error: "noteId é obrigatório." },
+        { status: 400 }
+      );
+    }
+
+    await convex.mutation(api.health.deleteClinicalNote, {
+      noteId: noteId as any,
+      userId: userId ? (userId as any) : undefined,
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("Clinical notes DELETE error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}

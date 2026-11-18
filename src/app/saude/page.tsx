@@ -22,6 +22,8 @@ import {
   FileCheck,
   ChevronDown,
   Info,
+  Edit2,
+  Trash2,
 } from "lucide-react";
 import { format, differenceInCalendarDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -42,12 +44,15 @@ export default function SaudePage() {
   const [userCanViewPrivateVetNotes, setUserCanViewPrivateVetNotes] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Modais de Cadastro Rápido de Saúde
+  // Modais de Cadastro / Edição Rápida de Saúde
   const [showWeightModal, setShowWeightModal] = useState(false);
+  const [editingWeightId, setEditingWeightId] = useState<string | null>(null);
   const [weightValue, setWeightValue] = useState("");
+  const [weightDate, setWeightDate] = useState("");
   const [weightNotes, setWeightNotes] = useState("");
 
   const [showApptModal, setShowApptModal] = useState(false);
+  const [editingApptId, setEditingApptId] = useState<string | null>(null);
   const [apptTitle, setApptTitle] = useState("");
   const [apptType, setApptType] = useState("consulta");
   const [apptDate, setApptDate] = useState("");
@@ -56,6 +61,7 @@ export default function SaudePage() {
   const [apptVet, setApptVet] = useState("");
 
   const [showVaccineModal, setShowVaccineModal] = useState(false);
+  const [editingVaccineId, setEditingVaccineId] = useState<string | null>(null);
   const [vaccName, setVaccName] = useState("");
   const [vaccDate, setVaccDate] = useState("");
   const [vaccDueDate, setVaccDueDate] = useState("");
@@ -82,8 +88,9 @@ export default function SaudePage() {
   const [selectedRejectMed, setSelectedRejectMed] = useState<any | null>(null);
   const [rejectionNotes, setRejectionNotes] = useState("");
 
-  // Modal de Nova Nota Clínica
+  // Modal de Nota Clínica
   const [showNoteModal, setShowNoteModal] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteContent, setNoteContent] = useState("");
   const [noteVisibility, setNoteVisibility] = useState<"ALL_TUTORS" | "PROFESSIONALS_ONLY">("ALL_TUTORS");
 
@@ -144,30 +151,67 @@ export default function SaudePage() {
     };
   }, [activePetId, pets, currentUser.id, refreshTrigger]);
 
+  const openNewWeightModal = () => {
+    setEditingWeightId(null);
+    setWeightValue("");
+    setWeightDate(format(new Date(), "yyyy-MM-dd"));
+    setWeightNotes("");
+    setShowWeightModal(true);
+  };
+
+  const openEditWeightModal = (rec: any) => {
+    setEditingWeightId(rec.id);
+    setWeightValue(String(rec.weight ?? ""));
+    try {
+      setWeightDate(rec.date ? format(new Date(rec.date), "yyyy-MM-dd") : "");
+    } catch {
+      setWeightDate("");
+    }
+    setWeightNotes(rec.notes || "");
+    setShowWeightModal(true);
+  };
+
   const handleAddWeight = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!weightValue) return;
 
+    const isoDate = weightDate ? `${weightDate}T12:00:00.000Z` : undefined;
     try {
       const res = await fetch("/api/saude", {
-        method: "POST",
+        method: editingWeightId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "weight",
-          petId: activePetId,
-          userId: currentUser.id,
-          data: {
-            weight: parseFloat(weightValue),
-            notes: weightNotes,
-          },
-        }),
+        body: JSON.stringify(
+          editingWeightId
+            ? {
+                type: "weight",
+                id: editingWeightId,
+                userId: currentUser.id,
+                data: {
+                  weight: parseFloat(weightValue),
+                  date: isoDate,
+                  notes: weightNotes.trim(),
+                },
+              }
+            : {
+                type: "weight",
+                petId: activePetId,
+                userId: currentUser.id,
+                data: {
+                  weight: parseFloat(weightValue),
+                  date: isoDate,
+                  notes: weightNotes.trim(),
+                },
+              }
+        ),
       });
 
       if (res.ok) {
-        setFeedback("Peso registrado com sucesso!");
+        setFeedback(editingWeightId ? "Peso atualizado com sucesso!" : "Peso registrado com sucesso!");
         setTimeout(() => setFeedback(null), 3500);
         setShowWeightModal(false);
+        setEditingWeightId(null);
         setWeightValue("");
+        setWeightDate("");
         setWeightNotes("");
         triggerRefresh();
       }
@@ -176,33 +220,91 @@ export default function SaudePage() {
     }
   };
 
+  const handleDeleteWeight = async (weightId: string, weightNum: number) => {
+    if (!confirm(`Deseja excluir o registro de peso (${weightNum} kg)?`)) return;
+    try {
+      const res = await fetch(
+        `/api/saude?type=weight&id=${encodeURIComponent(weightId)}&userId=${encodeURIComponent(
+          currentUser.id
+        )}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setFeedback("Registro de peso excluído.");
+        setTimeout(() => setFeedback(null), 3500);
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const openNewApptModal = () => {
+    setEditingApptId(null);
+    setApptTitle("");
+    setApptType("consulta");
+    setApptDate("");
+    setApptTime("14:00");
+    setApptLocation("");
+    setApptVet("");
+    setShowApptModal(true);
+  };
+
+  const openEditApptModal = (a: any) => {
+    setEditingApptId(a.id);
+    setApptTitle(a.title || "");
+    setApptType(a.type || "consulta");
+    setApptDate(a.date ? String(a.date).slice(0, 10) : "");
+    setApptTime(a.time || "14:00");
+    setApptLocation(a.location || "");
+    setApptVet(a.veterinarian || "");
+    setShowApptModal(true);
+  };
+
   const handleAddAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!apptTitle || !apptDate) return;
 
     try {
       const res = await fetch("/api/saude", {
-        method: "POST",
+        method: editingApptId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "appointment",
-          petId: activePetId,
-          userId: currentUser.id,
-          data: {
-            title: apptTitle,
-            type: apptType,
-            date: apptDate,
-            time: apptTime,
-            location: apptLocation,
-            veterinarian: apptVet,
-          },
-        }),
+        body: JSON.stringify(
+          editingApptId
+            ? {
+                type: "appointment",
+                id: editingApptId,
+                userId: currentUser.id,
+                data: {
+                  title: apptTitle,
+                  type: apptType,
+                  date: apptDate,
+                  time: apptTime,
+                  location: apptLocation.trim(),
+                  veterinarian: apptVet.trim(),
+                },
+              }
+            : {
+                type: "appointment",
+                petId: activePetId,
+                userId: currentUser.id,
+                data: {
+                  title: apptTitle,
+                  type: apptType,
+                  date: apptDate,
+                  time: apptTime,
+                  location: apptLocation.trim(),
+                  veterinarian: apptVet.trim(),
+                },
+              }
+        ),
       });
 
       if (res.ok) {
-        setFeedback("Compromisso agendado!");
+        setFeedback(editingApptId ? "Compromisso atualizado!" : "Compromisso agendado!");
         setTimeout(() => setFeedback(null), 3500);
         setShowApptModal(false);
+        setEditingApptId(null);
         setApptTitle("");
         setApptDate("");
         setApptLocation("");
@@ -214,35 +316,106 @@ export default function SaudePage() {
     }
   };
 
+  const handleDeleteAppointment = async (appointmentId: string, title: string) => {
+    if (!confirm(`Deseja excluir o compromisso "${title}"?`)) return;
+    try {
+      const res = await fetch(
+        `/api/saude?type=appointment&id=${encodeURIComponent(
+          appointmentId
+        )}&userId=${encodeURIComponent(currentUser.id)}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setFeedback("Compromisso excluído.");
+        setTimeout(() => setFeedback(null), 3500);
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const openNewVaccineModal = () => {
+    setEditingVaccineId(null);
+    setVaccName("");
+    setVaccDate("");
+    setVaccDueDate("");
+    setVaccVet("");
+    setShowVaccineModal(true);
+  };
+
+  const openEditVaccineModal = (v: any) => {
+    setEditingVaccineId(v.id);
+    setVaccName(v.name || "");
+    setVaccDate(v.applicationDate ? String(v.applicationDate).slice(0, 10) : "");
+    setVaccDueDate(v.nextDueDate ? String(v.nextDueDate).slice(0, 10) : "");
+    setVaccVet(v.veterinarian || "");
+    setShowVaccineModal(true);
+  };
+
   const handleAddVaccine = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!vaccName || !vaccDate) return;
 
     try {
       const res = await fetch("/api/saude", {
-        method: "POST",
+        method: editingVaccineId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "vaccination",
-          petId: activePetId,
-          userId: currentUser.id,
-          data: {
-            name: vaccName,
-            applicationDate: vaccDate,
-            nextDueDate: vaccDueDate || null,
-            veterinarian: vaccVet,
-          },
-        }),
+        body: JSON.stringify(
+          editingVaccineId
+            ? {
+                type: "vaccination",
+                id: editingVaccineId,
+                userId: currentUser.id,
+                data: {
+                  name: vaccName,
+                  applicationDate: vaccDate,
+                  nextDueDate: vaccDueDate || null,
+                  veterinarian: vaccVet.trim(),
+                },
+              }
+            : {
+                type: "vaccination",
+                petId: activePetId,
+                userId: currentUser.id,
+                data: {
+                  name: vaccName,
+                  applicationDate: vaccDate,
+                  nextDueDate: vaccDueDate || null,
+                  veterinarian: vaccVet.trim(),
+                },
+              }
+        ),
       });
 
       if (res.ok) {
-        setFeedback("Vacina registrada!");
+        setFeedback(editingVaccineId ? "Vacina atualizada!" : "Vacina registrada!");
         setTimeout(() => setFeedback(null), 3500);
         setShowVaccineModal(false);
+        setEditingVaccineId(null);
         setVaccName("");
         setVaccDate("");
         setVaccDueDate("");
         setVaccVet("");
+        triggerRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteVaccine = async (vaccineId: string, name: string) => {
+    if (!confirm(`Deseja excluir a vacina "${name}"?`)) return;
+    try {
+      const res = await fetch(
+        `/api/saude?type=vaccination&id=${encodeURIComponent(
+          vaccineId
+        )}&userId=${encodeURIComponent(currentUser.id)}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setFeedback("Vacina excluída.");
+        setTimeout(() => setFeedback(null), 3500);
         triggerRefresh();
       }
     } catch (err) {
@@ -359,32 +532,81 @@ export default function SaudePage() {
     }
   };
 
+  const openNewNoteModal = () => {
+    setEditingNoteId(null);
+    setNoteContent("");
+    setNoteVisibility("ALL_TUTORS");
+    setShowNoteModal(true);
+  };
+
+  const openEditNoteModal = (note: any) => {
+    setEditingNoteId(note.id);
+    setNoteContent(note.content || "");
+    setNoteVisibility(
+      note.visibility === "PROFESSIONALS_ONLY" ? "PROFESSIONALS_ONLY" : "ALL_TUTORS"
+    );
+    setShowNoteModal(true);
+  };
+
   const handleAddClinicalNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!noteContent) return;
+    if (!noteContent.trim()) return;
 
     try {
       const res = await fetch("/api/saude/notas", {
-        method: "POST",
+        method: editingNoteId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          petId: activePetId,
-          authorId: currentUser.id,
-          content: noteContent,
-          visibility: noteVisibility,
-        }),
+        body: JSON.stringify(
+          editingNoteId
+            ? {
+                noteId: editingNoteId,
+                userId: currentUser.id,
+                content: noteContent.trim(),
+                visibility: noteVisibility,
+              }
+            : {
+                petId: activePetId,
+                authorId: currentUser.id,
+                content: noteContent.trim(),
+                visibility: noteVisibility,
+              }
+        ),
       });
 
       const json = await res.json();
       if (res.ok) {
-        setFeedback("Nota clínica registrada no prontuário!");
+        setFeedback(
+          editingNoteId
+            ? "Nota clínica atualizada!"
+            : "Nota clínica registrada no prontuário!"
+        );
         setTimeout(() => setFeedback(null), 3500);
         setShowNoteModal(false);
+        setEditingNoteId(null);
         setNoteContent("");
         setNoteVisibility("ALL_TUTORS");
         triggerRefresh();
       } else {
-        alert(json.error || "Erro ao registrar nota");
+        alert(json.error || "Erro ao salvar nota");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteClinicalNote = async (noteId: string) => {
+    if (!confirm("Deseja excluir esta nota clínica do prontuário?")) return;
+    try {
+      const res = await fetch(
+        `/api/saude/notas?noteId=${encodeURIComponent(noteId)}&userId=${encodeURIComponent(
+          currentUser.id
+        )}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setFeedback("Nota clínica excluída.");
+        setTimeout(() => setFeedback(null), 3500);
+        triggerRefresh();
       }
     } catch (err) {
       console.error(err);
@@ -426,7 +648,7 @@ export default function SaudePage() {
 
           {permissions.canAddClinicalNotes && (
             <button
-              onClick={() => setShowNoteModal(true)}
+              onClick={openNewNoteModal}
               className="px-3 py-2 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
             >
               <FileText className="w-4 h-4 text-purple-600" />
@@ -435,7 +657,7 @@ export default function SaudePage() {
           )}
 
           <button
-            onClick={() => setShowWeightModal(true)}
+            onClick={openNewWeightModal}
             className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
           >
             <Scale className="w-4 h-4 text-emerald-600" />
@@ -443,7 +665,7 @@ export default function SaudePage() {
           </button>
 
           <button
-            onClick={() => setShowVaccineModal(true)}
+            onClick={openNewVaccineModal}
             className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
           >
             <Syringe className="w-4 h-4 text-amber-600" />
@@ -451,7 +673,7 @@ export default function SaudePage() {
           </button>
 
           <button
-            onClick={() => setShowApptModal(true)}
+            onClick={openNewApptModal}
             className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5"
           >
             <Calendar className="w-4 h-4" />
@@ -580,7 +802,7 @@ export default function SaudePage() {
           </div>
           {permissions.canAddClinicalNotes && (
             <button
-              onClick={() => setShowNoteModal(true)}
+              onClick={openNewNoteModal}
               className="self-start sm:self-auto px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -645,17 +867,40 @@ export default function SaudePage() {
                       </div>
                     </div>
 
-                    {isPrivateVet ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-200 text-purple-900 border border-purple-300">
-                        <Lock className="w-3 h-3" />
-                        <span>Confidencial Vet</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                        <ShieldCheck className="w-3 h-3" />
-                        <span>Pública (Tutores)</span>
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {isPrivateVet ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-200 text-purple-900 border border-purple-300">
+                          <Lock className="w-3 h-3" />
+                          <span>Confidencial Vet</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          <ShieldCheck className="w-3 h-3" />
+                          <span>Pública (Tutores)</span>
+                        </span>
+                      )}
+
+                      {(permissions.canAddClinicalNotes || note.authorId === currentUser.id) && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openEditNoteModal(note)}
+                            className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition cursor-pointer"
+                            title="Editar nota clínica"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteClinicalNote(note.id)}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition cursor-pointer"
+                            title="Excluir nota clínica"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   <p className="text-xs leading-relaxed whitespace-pre-wrap pl-9">
@@ -696,17 +941,40 @@ export default function SaudePage() {
                     key={v.id}
                     className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5"
                   >
-                    <div className="flex items-start justify-between">
-                      <div className="font-bold text-slate-900 text-sm">{v.name}</div>
-                      {isOverdue && (
-                        <span className="bg-rose-100 text-rose-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                          Atrasada há {Math.abs(daysUntil)} dias
-                        </span>
-                      )}
-                      {isUpcoming && (
-                        <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                          Vence em {daysUntil} dias
-                        </span>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="font-bold text-slate-900 text-sm">{v.name}</div>
+                        {isOverdue && (
+                          <span className="bg-rose-100 text-rose-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                            Atrasada há {Math.abs(daysUntil)} dias
+                          </span>
+                        )}
+                        {isUpcoming && (
+                          <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                            Vence em {daysUntil} dias
+                          </span>
+                        )}
+                      </div>
+
+                      {!permissions.canViewOnly && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openEditVaccineModal(v)}
+                            className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition cursor-pointer"
+                            title="Editar vacina"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteVaccine(v.id, v.name)}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition cursor-pointer"
+                            title="Excluir vacina"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       )}
                     </div>
 
@@ -752,21 +1020,43 @@ export default function SaudePage() {
                   key={a.id}
                   className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5"
                 >
-                  <div className="flex items-start justify-between">
+                  <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-bold text-slate-900 text-sm">{a.title}</div>
                       <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider">
                         {a.type}
                       </span>
                     </div>
-                    <div className="text-right">
-                      <div className="text-xs font-bold text-slate-900">
-                        {format(new Date(a.date), "dd/MM/yyyy")}
+                    <div className="flex items-start gap-2">
+                      <div className="text-right">
+                        <div className="text-xs font-bold text-slate-900">
+                          {format(new Date(a.date), "dd/MM/yyyy")}
+                        </div>
+                        {a.time && (
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1 justify-end">
+                            <Clock className="w-3 h-3" />
+                            <span>{a.time}</span>
+                          </div>
+                        )}
                       </div>
-                      {a.time && (
-                        <div className="text-[11px] text-slate-500 flex items-center gap-1 justify-end">
-                          <Clock className="w-3 h-3" />
-                          <span>{a.time}</span>
+                      {!permissions.canViewOnly && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openEditApptModal(a)}
+                            className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition cursor-pointer"
+                            title="Editar compromisso"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAppointment(a.id, a.title)}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition cursor-pointer"
+                            title="Excluir compromisso"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       )}
                     </div>
@@ -818,12 +1108,37 @@ export default function SaudePage() {
           {data.weightHistory.map((rec: any) => (
             <div
               key={rec.id}
-              className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center space-y-1"
+              className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center space-y-1 relative"
             >
+              {!permissions.canViewOnly && (
+                <div className="flex items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => openEditWeightModal(rec)}
+                    className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition cursor-pointer"
+                    title="Editar peso"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteWeight(rec.id, rec.weight)}
+                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition cursor-pointer"
+                    title="Excluir peso"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
               <div className="text-xl font-black text-slate-900">{rec.weight} kg</div>
               <div className="text-[11px] text-slate-500 font-medium">
                 {format(new Date(rec.date), "dd/MM/yyyy")}
               </div>
+              {rec.notes && (
+                <div className="text-[10px] text-slate-500 truncate" title={rec.notes}>
+                  {rec.notes}
+                </div>
+              )}
               {rec.user && (
                 <div className="text-[10px] text-slate-400">Por {rec.user.name.split(" ")[0]}</div>
               )}
@@ -1131,17 +1446,20 @@ export default function SaudePage() {
         </div>
       )}
 
-      {/* MODAL: Nova Nota Clínica no Prontuário */}
+      {/* MODAL: Nota Clínica no Prontuário */}
       {showNoteModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2 text-purple-700 font-black text-lg">
                 <FileText className="w-6 h-6" />
-                <span>Nova Nota no Prontuário</span>
+                <span>{editingNoteId ? "Editar Nota no Prontuário" : "Nova Nota no Prontuário"}</span>
               </div>
               <button
-                onClick={() => setShowNoteModal(false)}
+                onClick={() => {
+                  setShowNoteModal(false);
+                  setEditingNoteId(null);
+                }}
                 className="text-slate-400 hover:text-slate-600 p-1"
               >
                 <X className="w-5 h-5" />
@@ -1212,7 +1530,10 @@ export default function SaudePage() {
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setShowNoteModal(false)}
+                  onClick={() => {
+                    setShowNoteModal(false);
+                    setEditingNoteId(null);
+                  }}
                   className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   Cancelar
@@ -1221,7 +1542,7 @@ export default function SaudePage() {
                   type="submit"
                   className="px-5 py-2 text-xs font-bold bg-purple-600 hover:bg-purple-700 text-white rounded-xl shadow-xs"
                 >
-                  Salvar no Prontuário
+                  {editingNoteId ? "Salvar Alterações" : "Salvar no Prontuário"}
                 </button>
               </div>
             </form>
@@ -1229,11 +1550,13 @@ export default function SaudePage() {
         </div>
       )}
 
-      {/* Modal Adicionar Peso */}
+      {/* Modal Adicionar / Editar Peso */}
       {showWeightModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl">
-            <h3 className="text-lg font-black text-slate-900 mb-1">Registrar Peso</h3>
+            <h3 className="text-lg font-black text-slate-900 mb-1">
+              {editingWeightId ? "Editar Registro de Peso" : "Registrar Peso"}
+            </h3>
             <p className="text-xs text-slate-500 mb-4">Acompanhamento contínuo da saúde.</p>
             <form onSubmit={handleAddWeight} className="space-y-4">
               <div>
@@ -1245,6 +1568,15 @@ export default function SaudePage() {
                   placeholder="Ex: 32.5"
                   value={weightValue}
                   onChange={(e) => setWeightValue(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">Data</label>
+                <input
+                  type="date"
+                  value={weightDate}
+                  onChange={(e) => setWeightDate(e.target.value)}
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                 />
               </div>
@@ -1261,7 +1593,10 @@ export default function SaudePage() {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowWeightModal(false)}
+                  onClick={() => {
+                    setShowWeightModal(false);
+                    setEditingWeightId(null);
+                  }}
                   className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   Cancelar
@@ -1270,7 +1605,7 @@ export default function SaudePage() {
                   type="submit"
                   className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl"
                 >
-                  Salvar
+                  {editingWeightId ? "Atualizar" : "Salvar"}
                 </button>
               </div>
             </form>
@@ -1278,11 +1613,13 @@ export default function SaudePage() {
         </div>
       )}
 
-      {/* Modal Adicionar Vacina */}
+      {/* Modal Adicionar / Editar Vacina */}
       {showVaccineModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl">
-            <h3 className="text-lg font-black text-slate-900 mb-1">Registrar Vacina</h3>
+            <h3 className="text-lg font-black text-slate-900 mb-1">
+              {editingVaccineId ? "Editar Vacina" : "Registrar Vacina"}
+            </h3>
             <p className="text-xs text-slate-500 mb-4">Adicione o histórico ou reforço.</p>
             <form onSubmit={handleAddVaccine} className="space-y-3">
               <div>
@@ -1330,7 +1667,10 @@ export default function SaudePage() {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowVaccineModal(false)}
+                  onClick={() => {
+                    setShowVaccineModal(false);
+                    setEditingVaccineId(null);
+                  }}
                   className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   Cancelar
@@ -1339,7 +1679,7 @@ export default function SaudePage() {
                   type="submit"
                   className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl"
                 >
-                  Salvar Vacina
+                  {editingVaccineId ? "Atualizar Vacina" : "Salvar Vacina"}
                 </button>
               </div>
             </form>
@@ -1347,11 +1687,13 @@ export default function SaudePage() {
         </div>
       )}
 
-      {/* Modal Agendar Consulta */}
+      {/* Modal Agendar / Editar Consulta */}
       {showApptModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl">
-            <h3 className="text-lg font-black text-slate-900 mb-1">Agendar Compromisso</h3>
+            <h3 className="text-lg font-black text-slate-900 mb-1">
+              {editingApptId ? "Editar Compromisso" : "Agendar Compromisso"}
+            </h3>
             <p className="text-xs text-slate-500 mb-4">Consulta, retorno, banho ou exame.</p>
             <form onSubmit={handleAddAppointment} className="space-y-3">
               <div>
@@ -1425,7 +1767,10 @@ export default function SaudePage() {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowApptModal(false)}
+                  onClick={() => {
+                    setShowApptModal(false);
+                    setEditingApptId(null);
+                  }}
                   className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   Cancelar
@@ -1434,7 +1779,7 @@ export default function SaudePage() {
                   type="submit"
                   className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl"
                 >
-                  Agendar
+                  {editingApptId ? "Salvar Alterações" : "Agendar"}
                 </button>
               </div>
             </form>

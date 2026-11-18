@@ -1,5 +1,24 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, MutationCtx } from "./_generated/server";
+import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+
+async function syncLatestPetWeight(ctx: MutationCtx, petId: Id<"pets">) {
+  const remaining = await ctx.db
+    .query("weightRecords")
+    .withIndex("by_pet", (q) => q.eq("petId", petId))
+    .collect();
+
+  const sorted = [...remaining].sort((a, b) => {
+    const tA = new Date(a.date).getTime();
+    const tB = new Date(b.date).getTime();
+    if (!isNaN(tA) && !isNaN(tB) && tB !== tA) return tB - tA;
+    return b._creationTime - a._creationTime;
+  });
+
+  await ctx.db.patch(petId, {
+    weight: sorted[0]?.weight,
+  });
+}
 
 export const getPetHealth = query({
   args: { petId: v.id("pets") },
@@ -223,5 +242,250 @@ export const recordClinicalNote = mutation({
     });
 
     return noteId;
+  },
+});
+
+export const updateClinicalNote = mutation({
+  args: {
+    noteId: v.id("clinicalNotes"),
+    userId: v.optional(v.id("users")),
+    content: v.string(),
+    visibility: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.noteId);
+    if (!existing) throw new Error("Nota clínica não encontrada.");
+
+    await ctx.db.patch(args.noteId, {
+      content: args.content.trim(),
+      ...(args.visibility ? { visibility: args.visibility } : {}),
+    });
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: "editou uma nota clínica do prontuário",
+        entityType: "health",
+        entityId: args.noteId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const deleteClinicalNote = mutation({
+  args: {
+    noteId: v.id("clinicalNotes"),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.noteId);
+    if (!existing) throw new Error("Nota clínica não encontrada.");
+
+    await ctx.db.delete(args.noteId);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: "excluiu uma nota clínica do prontuário",
+        entityType: "health",
+        entityId: args.noteId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const updateWeight = mutation({
+  args: {
+    weightId: v.id("weightRecords"),
+    userId: v.optional(v.id("users")),
+    weight: v.number(),
+    date: v.optional(v.string()),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.weightId);
+    if (!existing) throw new Error("Registro de peso não encontrado.");
+
+    await ctx.db.patch(args.weightId, {
+      weight: args.weight,
+      date: args.date || existing.date,
+      notes: args.notes,
+    });
+
+    await syncLatestPetWeight(ctx, existing.petId);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `editou pesagem para ${args.weight} kg`,
+        entityType: "health",
+        entityId: args.weightId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const deleteWeight = mutation({
+  args: {
+    weightId: v.id("weightRecords"),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.weightId);
+    if (!existing) throw new Error("Registro de peso não encontrado.");
+
+    await ctx.db.delete(args.weightId);
+    await syncLatestPetWeight(ctx, existing.petId);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `excluiu pesagem de ${existing.weight} kg`,
+        entityType: "health",
+        entityId: args.weightId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const updateVaccine = mutation({
+  args: {
+    vaccineId: v.id("vaccinations"),
+    userId: v.optional(v.id("users")),
+    name: v.string(),
+    applicationDate: v.string(),
+    nextDueDate: v.optional(v.string()),
+    veterinarian: v.optional(v.string()),
+    crmv: v.optional(v.string()),
+    batch: v.optional(v.string()),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.vaccineId);
+    if (!existing) throw new Error("Vacina não encontrada.");
+
+    await ctx.db.patch(args.vaccineId, {
+      name: args.name.trim(),
+      applicationDate: args.applicationDate,
+      nextDueDate: args.nextDueDate,
+      veterinarian: args.veterinarian,
+      crmv: args.crmv,
+      batch: args.batch,
+      notes: args.notes,
+    });
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `editou a vacina "${args.name.trim()}"`,
+        entityType: "vaccine",
+        entityId: args.vaccineId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const deleteVaccine = mutation({
+  args: {
+    vaccineId: v.id("vaccinations"),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.vaccineId);
+    if (!existing) throw new Error("Vacina não encontrada.");
+
+    await ctx.db.delete(args.vaccineId);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `excluiu a vacina "${existing.name}"`,
+        entityType: "vaccine",
+        entityId: args.vaccineId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const updateAppointment = mutation({
+  args: {
+    appointmentId: v.id("appointments"),
+    userId: v.optional(v.id("users")),
+    title: v.string(),
+    type: v.string(),
+    date: v.string(),
+    time: v.string(),
+    location: v.optional(v.string()),
+    veterinarian: v.optional(v.string()),
+    notes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.appointmentId);
+    if (!existing) throw new Error("Compromisso não encontrado.");
+
+    await ctx.db.patch(args.appointmentId, {
+      title: args.title.trim(),
+      type: args.type,
+      date: args.date,
+      time: args.time,
+      location: args.location,
+      veterinarian: args.veterinarian,
+      notes: args.notes,
+    });
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `editou o compromisso "${args.title.trim()}"`,
+        entityType: "appointment",
+        entityId: args.appointmentId,
+      });
+    }
+
+    return { success: true };
+  },
+});
+
+export const deleteAppointment = mutation({
+  args: {
+    appointmentId: v.id("appointments"),
+    userId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.get(args.appointmentId);
+    if (!existing) throw new Error("Compromisso não encontrado.");
+
+    await ctx.db.delete(args.appointmentId);
+
+    if (args.userId) {
+      await ctx.db.insert("activityLogs", {
+        petId: existing.petId,
+        userId: args.userId,
+        action: `excluiu o compromisso "${existing.title}"`,
+        entityType: "appointment",
+        entityId: args.appointmentId,
+      });
+    }
+
+    return { success: true };
   },
 });
