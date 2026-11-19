@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
 import { getRolePermissions } from "@/lib/permissions";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -112,6 +113,18 @@ export async function POST(request: Request) {
       total,
       notes: notes || undefined,
       items: formattedItems,
+    });
+
+    await notifyPetMembersOnWhatsApp({
+      convex,
+      petId: String(petId),
+      actorUserId: String(userId),
+      category: "stock",
+      summary: `🛒 *Nova Compra no Estoque:* ${
+        supplier ? `${supplier} — ` : ""
+      }${formattedItems.length} item(ns) no valor total de R$ ${total
+        .toFixed(2)
+        .replace(".", ",")}`,
     });
 
     return NextResponse.json({

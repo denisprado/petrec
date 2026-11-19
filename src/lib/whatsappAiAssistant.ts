@@ -4,6 +4,15 @@ import { addDays, format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { api } from "../../convex/_generated/api";
 import { calculateStockForecast, StockCalculationResult } from "./stockCalculation";
+import {
+  ALL_NOTIFICATION_CATEGORY_KEYS,
+  formatNotificationPreferencesSummary,
+  getCategoryMeta,
+  NotificationCategory,
+  NotificationPreferences,
+  parseNotificationCategoriesFromText,
+  resolveNotificationPreferences,
+} from "./notificationPreferences";
 
 export const AI_MODEL_NAME = "gemini-3.8-flash";
 
@@ -1833,13 +1842,36 @@ const ASSISTANT_TOOLS = [
   {
     type: "function" as const,
     name: "toggle_whatsapp_notifications",
-    description: "Silencia ou reativa o recebimento de notificações de atividades de outros tutores deste pet no WhatsApp.",
+    description:
+      "Ativa, silencia ou personaliza por categoria (estoque/compras, remédios, ração/alimentação, vacinas, notas clínicas, consultas/peso) as notificações do WhatsApp para você ou, sendo proprietário, para outro membro/veterinário do pet.",
     parameters: {
       type: "object",
       properties: {
-        enabled: { type: "boolean", description: "true para ativar, false para silenciar." },
+        enabled: {
+          type: "boolean",
+          description: "true para ativar, false para silenciar.",
+        },
+        categories: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Categorias opcionais: 'stock', 'medications', 'feeding', 'vaccinations', 'notes', 'appointments'.",
+        },
+        onlyCategories: {
+          type: "boolean",
+          description:
+            "Quando true, mantém ativas apenas as categorias em 'categories' e silencia as demais.",
+        },
+        targetMemberName: {
+          type: "string",
+          description:
+            "Nome ou papel do membro-alvo (ex: 'Dra. Camila', 'veterinário') quando o proprietário quer gerenciar alertas de outra pessoa.",
+        },
+        showCurrent: {
+          type: "boolean",
+          description: "true para apenas consultar suas preferências atuais de notificação.",
+        },
       },
-      required: ["enabled"],
     },
   },
   {
@@ -1948,7 +1980,7 @@ function buildSystemInstruction(snapshot: PetContextSnapshot): string {
     `5. Se pular/cuspir/administrar dose hoje -> 'update_medication_dose'. Para cadastrar receita/remédio -> 'create_medication'. Para editar horário/dose/instruções -> 'update_medication'. Para excluir/parar medicamento -> 'delete_medication'. Para listar ficha de remédios -> 'list_medications'.\n` +
     `6. Para compra/reposição (inclusive com preço R$ e loja) -> 'record_purchase'. Para histórico/gastos -> 'list_purchases'. Para lista de compras -> 'add_shopping_list_item' ou 'toggle_shopping_list_item'. Para ajuste físico -> 'adjust_stock'. Para alterar consumo diário -> 'update_daily_consumption'. Para alterar antecedência de alerta -> 'update_inventory_lead_time'. Para excluir item do estoque -> 'delete_inventory_item'.\n` +
     `7. Para vacina -> 'record_vaccine'. Para consulta/exame -> 'record_appointment' ou 'list_appointments'. Para nota clínica/sintoma -> 'record_clinical_note'. Para aprovar/recusar prescrição veterinária -> 'review_prescription'. Para editar/excluir nota, peso, vacina ou compromisso -> 'manage_health_record'.\n` +
-    `8. Para código de compartilhamento/convite -> 'get_pet_share_code_or_invite'. Para ver tutores -> 'list_pet_members'. Para silenciar/ativar notificações no WhatsApp -> 'toggle_whatsapp_notifications'.\n` +
+    `8. Para código de compartilhamento/convite -> 'get_pet_share_code_or_invite'. Para ver tutores e equipe -> 'list_pet_members'. Para silenciar, ativar ou personalizar categorias de notificações no WhatsApp (suas ou, se você for proprietário, de outro membro/veterinário) -> 'toggle_whatsapp_notifications'.\n` +
     `9. Responda em português brasileiro claro, conciso e amigável para WhatsApp.`
   );
 }
@@ -3492,15 +3524,29 @@ export async function executeAssistantToolCall(params: {
         const roleLabel =
           m.role === "owner"
             ? "Tutor(a) Principal"
+            : m.role === "co_owner"
+            ? "Coproprietário(a)"
             : m.role === "vet_limited"
             ? "Médico Veterinário"
+            : m.role === "clinic_admin"
+            ? "Clínica / Recepção"
             : m.role === "caregiver_pro"
             ? "Cuidador Pro"
             : m.role === "viewer"
             ? "Visualizador"
             : "Tutor Familiar";
-        const notifIcon = m.notifyWhatsApp === false ? "🔕 Silenciado" : "🔔 WhatsApp ativo";
-        return `• *${m.user?.name || "Tutor"}* — ${roleLabel} (${notifIcon})`;
+        const prefs = resolveNotificationPreferences(m.role, m.notificationPreferences);
+        const activeCats = ALL_NOTIFICATION_CATEGORY_KEYS.filter((k) => prefs[k]).map((k) => {
+          const meta = getCategoryMeta(k);
+          return `${meta.emoji} ${meta.shortLabel}`;
+        });
+        const notifStatus =
+          m.notifyWhatsApp === false
+            ? "🔕 Geral silenciado"
+            : activeCats.length > 0
+            ? `🔔 ${activeCats.join(", ")}`
+            : "🔕 Todas categorias silenciadas";
+        return `• *${m.user?.name || "Tutor"}* — ${roleLabel}\n  ${notifStatus}`;
       });
 
       return {
@@ -3511,23 +3557,172 @@ export async function executeAssistantToolCall(params: {
 
     case "toggle_whatsapp_notifications": {
       const petDetails = await convex.query(api.pets.getById, { petId: pet._id });
-      const membership = (petDetails?.members || []).find(
+      const members = petDetails?.members || [];
+      const selfMembership = members.find(
         (m: any) => String(m.userId) === String(userId)
       );
-      if (!membership) {
+
+      let targetMembership = selfMembership;
+      if (args.targetMemberName && String(args.targetMemberName).trim()) {
+        const targetHint = normalizeText(String(args.targetMemberName));
+        const matched = members.find((m: any) => {
+          const memberNameNorm = normalizeText(m.user?.name || "");
+          if (
+            memberNameNorm &&
+            (memberNameNorm === targetHint ||
+              memberNameNorm.includes(targetHint) ||
+              targetHint.includes(memberNameNorm))
+          ) {
+            return true;
+          }
+          if (
+            (targetHint === "vet" || targetHint.includes("veterinari")) &&
+            m.role === "vet_limited"
+          ) {
+            return true;
+          }
+          if (
+            (targetHint.includes("clinica") || targetHint.includes("recepcao")) &&
+            m.role === "clinic_admin"
+          ) {
+            return true;
+          }
+          if (
+            (targetHint.includes("cuidador") || targetHint.includes("sitter")) &&
+            (m.role === "caregiver" || m.role === "caregiver_pro")
+          ) {
+            return true;
+          }
+          if (targetHint.includes("coproprietari") && m.role === "co_owner") {
+            return true;
+          }
+          if (targetHint.includes("visualiz") && m.role === "viewer") {
+            return true;
+          }
+          return false;
+        });
+
+        if (!matched) {
+          return {
+            replyText: `⚠️ Não encontrei o membro *${args.targetMemberName}* vinculado a *${pet.name}*. Envie *"Quem são os tutores?"* para conferir os nomes.`,
+          };
+        }
+        targetMembership = matched;
+      }
+
+      if (!targetMembership) {
         return { replyText: `⚠️ Não encontrei seu vínculo com *${pet.name}*.` };
+      }
+
+      const isSelf = String(targetMembership.userId) === String(userId);
+      const actorCanManage =
+        selfMembership?.isPrimary === true ||
+        selfMembership?.role === "owner" ||
+        selfMembership?.role === "co_owner";
+
+      const validCategories: NotificationCategory[] = Array.isArray(args.categories)
+        ? args.categories.filter((c: any): c is NotificationCategory =>
+            ALL_NOTIFICATION_CATEGORY_KEYS.includes(c)
+          )
+        : [];
+
+      if ((args.showCurrent || (validCategories.length === 0 && typeof args.enabled !== "boolean")) && targetMembership) {
+        const currentPrefs = resolveNotificationPreferences(
+          targetMembership.role,
+          targetMembership.notificationPreferences
+        );
+        const ownerLabel = isSelf ? "Suas notificações" : `Notificações de *${targetMembership.user?.name || "Membro"}*`;
+        const masterLabel =
+          targetMembership.notifyWhatsApp === false
+            ? "🔕 *Status geral:* Silenciado"
+            : "🔔 *Status geral:* Ativo";
+        return {
+          replyText:
+            `⚙️ *${ownerLabel} — ${pet.name}*\n` +
+            `${masterLabel}\n` +
+            `${formatNotificationPreferencesSummary(currentPrefs)}\n\n` +
+            `💡 _Exemplos: "Não receber avisos de compra de remédio", "Ativar apenas notas clínicas para o veterinário" ou "Silenciar notificações"._`,
+          actionTaken: "question_answered",
+        };
+      }
+
+      if (!isSelf && !actorCanManage) {
+        return {
+          replyText: `🔒 Apenas o proprietário ou coproprietário de *${pet.name}* pode alterar as notificações de outro membro.`,
+        };
+      }
+
+      const targetLabel = isSelf ? "para você" : `para *${targetMembership.user?.name || "o membro"}*`;
+
+      if (args.onlyCategories && validCategories.length > 0) {
+        const nextPrefs = ALL_NOTIFICATION_CATEGORY_KEYS.reduce((acc, key) => {
+          acc[key] = validCategories.includes(key);
+          return acc;
+        }, {} as NotificationPreferences);
+
+        await convex.mutation(api.users.toggleMemberWhatsAppNotifications, {
+          memberId: targetMembership._id,
+          notifyWhatsApp: true,
+          notificationPreferences: nextPrefs,
+          actorUserId: userId,
+        });
+
+        return {
+          replyText:
+            `🔔 *Preferências Exclusivas Atualizadas (${targetLabel}) — ${pet.name}:*\n\n` +
+            `${formatNotificationPreferencesSummary(nextPrefs)}`,
+          actionTaken: "notifications_toggled",
+        };
+      }
+
+      if (validCategories.length > 0) {
+        const enableFlag = typeof args.enabled === "boolean" ? args.enabled : true;
+        const categoryUpdates: Partial<NotificationPreferences> = {};
+        for (const cat of validCategories) {
+          categoryUpdates[cat] = enableFlag;
+        }
+
+        const res = await convex.mutation(api.users.toggleMemberWhatsAppNotifications, {
+          memberId: targetMembership._id,
+          categoryUpdates,
+          actorUserId: userId,
+        });
+
+        const updatedPrefs = resolveNotificationPreferences(
+          targetMembership.role,
+          res?.notificationPreferences
+        );
+        const catNames = validCategories.map((c) => {
+          const meta = getCategoryMeta(c);
+          return `${meta.emoji} ${meta.label}`;
+        });
+
+        return {
+          replyText:
+            `${enableFlag ? "🔔" : "🔕"} *Categorias ${
+              enableFlag ? "Ativadas" : "Silenciadas"
+            } (${targetLabel}) — ${pet.name}:*\n` +
+            `Alterado: ${catNames.join(", ")}\n\n` +
+            `${formatNotificationPreferencesSummary(updatedPrefs)}`,
+          actionTaken: "notifications_toggled",
+        };
       }
 
       const enabled = Boolean(args.enabled);
       await convex.mutation(api.users.toggleMemberWhatsAppNotifications, {
-        memberId: membership._id,
+        memberId: targetMembership._id,
         notifyWhatsApp: enabled,
+        actorUserId: userId,
       });
 
       return {
-        replyText: enabled
-          ? `🔔 *Notificações Ativadas!*\nVocê voltará a receber avisos de atividades de outros tutores de *${pet.name}* no WhatsApp.`
-          : `🔕 *Notificações Silenciadas!*\nVocê não receberá avisos de rotina de outros tutores de *${pet.name}* no WhatsApp (pode reativar quando quiser enviando *"Ativar notificações"*).`,
+        replyText: isSelf
+          ? enabled
+            ? `🔔 *Notificações Ativadas!*\nVocê voltará a receber avisos de atividades de outros tutores de *${pet.name}* no WhatsApp.`
+            : `🔕 *Notificações Silenciadas!*\nVocê não receberá avisos de rotina de outros tutores de *${pet.name}* no WhatsApp (pode reativar quando quiser enviando *"Ativar notificações"*).`
+          : enabled
+          ? `🔔 *Notificações Ativadas ${targetLabel}!*\n*${targetMembership.user?.name}* voltará a receber alertas de *${pet.name}* no WhatsApp.`
+          : `🔕 *Notificações Silenciadas ${targetLabel}!*\n*${targetMembership.user?.name}* não receberá mais alertas de *${pet.name}* no WhatsApp.`,
         actionTaken: "notifications_toggled",
       };
     }
@@ -3775,20 +3970,76 @@ async function interpretSingleClauseNlu(
     return callNluTool(convex, "create_pet", petCreation, snapshot, userId);
   }
 
-  // 0b. Silenciar ou reativar notificações do WhatsApp para o pet em foco
-  if (
-    /\b(?:silenci(?:a|e|ar)|desativ(?:a|e|ar)|paus(?:a|e|ar)|mut(?:a|e|ar))\b.*\bnotificac(?:ao|oes)\b/.test(
+  // 0b. Silenciar, reativar, consultar ou personalizar notificações do WhatsApp (por usuário ou membro)
+  const extractNotificationTargetMember = (): string | undefined => {
+    const roleHintMatch = clean.match(
+      /\b(veterinari[oa]|vet|clinic[oa]|recepcao|cuidador(?:a)?|pet\s*sitter|sitter|coproprietari[oa]|visualizador(?:a)?)\b/
+    );
+    if (roleHintMatch?.[1]) {
+      return roleHintMatch[1];
+    }
+
+    const nameMatch = messageText.match(
+      /(?:\bpara\s+(?:o\s+|a\s+)?|\bque\s+(?:o\s+|a\s+)?|\bd[oa]\s+)(Dr\.?\s+[A-ZÀ-Úa-zà-ú]+|Dra\.?\s+[A-ZÀ-Úa-zà-ú]+|[A-ZÀ-Ú][a-zà-ú]{2,24})(?=\s+(?:nao\s+|tambem\s+)?receb|\s+(?:em|sobre|de|dos|das|os|as|apenas|somente|$))/
+    );
+    if (nameMatch?.[1]) {
+      const candidate = nameMatch[1].trim();
+      const candNorm = normalizeText(candidate);
+      const isPetName = petNamesList.some((p) => normalizeText(p) === candNorm);
+      if (!isPetName) return candidate;
+    }
+    return undefined;
+  };
+
+  const notifCategories = parseNotificationCategoriesFromText(messageText);
+  const onlyCategoriesFlag = /\b(?:apenas|somente|so)\b/.test(clean) && notifCategories.length > 0;
+  const hasDisableNotifVerb =
+    /\b(?:silenci(?:a|e|ar)|desativ(?:a|e|ar)|paus(?:a|e|ar)|mut(?:a|e|ar)|evit(?:a|e|ar)|imped(?:e|ir)|tir(?:a|e|ar)|bloque(?:a|ie|ar))\b/.test(
       clean
-    )
+    ) ||
+    /\b(?:par(?:a|e|ar)\s+de\s+(?:enviar|receber|mandar)|nao\s+(?:quero\s+|quer\s+|vai\s+)?(?:enviar|receb(?:a|e|er)|mandar))\b/.test(
+      clean
+    );
+  const hasEnableNotifVerb =
+    !hasDisableNotifVerb &&
+    /\b(?:ativ(?:a|e|ar)|reativ(?:a|e|ar)|lig(?:a|ue|ar)|habilit(?:a|e|ar)|quero\s+receber|receb(?:a|er))\b/.test(
+      clean
+    );
+  const mentionsNotifTopic =
+    /\b(?:notificac(?:ao|oes)|avisos?|alertas?)\b/.test(clean) ||
+    (onlyCategoriesFlag && /\b(?:receb(?:a|er)|notific|avis|alert)\b/.test(clean));
+
+  if (
+    (/\b(?:minhas|suas|quais|ver|mostrar|como\s+estao|configuracoes)\b.*\bnotificac(?:ao|oes)\b/.test(
+      clean
+    ) ||
+      /^notificac(?:ao|oes)\??$/.test(clean)) &&
+    !hasDisableNotifVerb &&
+    !hasEnableNotifVerb
   ) {
-    return callNluTool(convex, "toggle_whatsapp_notifications", { enabled: false }, snapshot, userId);
+    return callNluTool(
+      convex,
+      "toggle_whatsapp_notifications",
+      { showCurrent: true, targetMemberName: extractNotificationTargetMember() },
+      snapshot,
+      userId
+    );
   }
-  if (
-    /\b(?:ativ(?:a|e|ar)|reativ(?:a|e|ar)|lig(?:a|ue|ar)|habilit(?:a|e|ar))\b.*\bnotificac(?:ao|oes)\b/.test(
-      clean
-    )
-  ) {
-    return callNluTool(convex, "toggle_whatsapp_notifications", { enabled: true }, snapshot, userId);
+
+  if (mentionsNotifTopic && (hasDisableNotifVerb || hasEnableNotifVerb)) {
+    const enabled = hasDisableNotifVerb ? false : true;
+    return callNluTool(
+      convex,
+      "toggle_whatsapp_notifications",
+      {
+        enabled,
+        categories: notifCategories.length > 0 ? notifCategories : undefined,
+        onlyCategories: onlyCategoriesFlag || undefined,
+        targetMemberName: extractNotificationTargetMember(),
+      },
+      snapshot,
+      userId
+    );
   }
 
   // 0c. Alternar modo de rotina ("Mudar para modo manual", "Ativar modo por exceção")
@@ -4517,6 +4768,17 @@ async function interpretSingleClauseNlu(
     };
   }
 
+  const extractDoseTimeHint = (): string | undefined => {
+    const timeMatch = clean.match(/(\d{1,2})\s*(?:h|hs|horas|:(\d{2}))/);
+    if (timeMatch) {
+      return `${timeMatch[1].padStart(2, "0")}:${timeMatch[2] || "00"}`;
+    }
+    if (clean.includes("manha") || clean.includes("cedo")) return "manha";
+    if (clean.includes("tarde")) return "tarde";
+    if (clean.includes("noite")) return "noite";
+    return undefined;
+  };
+
   // 2. Exceção de Medicamento (cuspiu, não consegui dar, vomitou remédio, pulei, etc.)
   const isMedException =
     clean.includes("cuspiu") ||
@@ -4529,17 +4791,6 @@ async function interpretSingleClauseNlu(
         snapshot.medications.some((m) => clean.includes(normalizeText(m.name)))));
 
   if (isMedException) {
-    const timeMatch = clean.match(/(\d{1,2})\s*(?:h|hs|horas|:(\d{2}))/);
-    const timeHint = timeMatch
-      ? `${timeMatch[1].padStart(2, "0")}:${timeMatch[2] || "00"}`
-      : clean.includes("manha") || clean.includes("cedo")
-      ? "manha"
-      : clean.includes("tarde")
-      ? "tarde"
-      : clean.includes("noite")
-      ? "noite"
-      : undefined;
-
     const matchedMed = snapshot.medications.find((m) =>
       clean.includes(normalizeText(m.name))
     );
@@ -4549,8 +4800,48 @@ async function interpretSingleClauseNlu(
       toolName: "update_medication_dose",
       args: {
         medicationName: matchedMed?.name,
-        scheduledTimeHint: timeHint,
+        scheduledTimeHint: extractDoseTimeHint(),
         status: "skipped",
+        reason: messageText.trim(),
+      },
+      snapshot,
+      userId,
+    });
+
+    return {
+      handled: true,
+      replyText: exec.replyText,
+      actionTaken: exec.actionTaken,
+      nextState: exec.nextState || "IDLE",
+      pendingActionPayload: exec.pendingActionPayload,
+      usedGemini: false,
+    };
+  }
+
+  // 2a. Administração positiva de medicamento ("Dei Bezafibrato agora", "Tomou o remédio das 12h")
+  const matchedAdminMed = snapshot.medications.find((m) =>
+    clean.includes(normalizeText(m.name))
+  );
+  const hasAdminVerb = /\b(?:dei|demos|administrei|administrado|apliquei|tomou)\b/.test(
+    clean
+  );
+  if (
+    hasAdminVerb &&
+    (Boolean(matchedAdminMed) ||
+      /\b(?:remedio|medicamento|dose)\b/.test(clean)) &&
+    !clean.includes("nao ") &&
+    !clean.includes("racao") &&
+    !clean.includes("comida") &&
+    !clean.includes("kg") &&
+    !clean.includes("?")
+  ) {
+    const exec = await executeAssistantToolCall({
+      convex,
+      toolName: "update_medication_dose",
+      args: {
+        medicationName: matchedAdminMed?.name,
+        scheduledTimeHint: extractDoseTimeHint(),
+        status: "administered",
         reason: messageText.trim(),
       },
       snapshot,

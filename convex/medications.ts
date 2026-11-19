@@ -669,6 +669,12 @@ export const approvePrescription = mutation({
       entityType: "medication",
       entityId: med._id,
     });
+
+    return {
+      success: true,
+      petId: med.petId,
+      medicationName: med.name,
+    };
   },
 });
 
@@ -694,6 +700,12 @@ export const rejectPrescription = mutation({
       entityType: "medication",
       entityId: med._id,
     });
+
+    return {
+      success: true,
+      petId: med.petId,
+      medicationName: med.name,
+    };
   },
 });
 

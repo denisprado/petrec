@@ -66,6 +66,7 @@ export async function POST(request: Request) {
         convex,
         petId: String(petId),
         actorUserId: userId ? String(userId) : undefined,
+        category: "appointments",
         summary: `⚖️ *Novo Peso Registrado:* ${Number(data.weight)} kg`,
       });
 
@@ -89,6 +90,7 @@ export async function POST(request: Request) {
         convex,
         petId: String(petId),
         actorUserId: userId ? String(userId) : undefined,
+        category: "appointments",
         summary: `📅 *Compromisso Agendado:* ${data.title} em ${data.date} às ${
           data.time || "10:00"
         }`,
@@ -114,6 +116,7 @@ export async function POST(request: Request) {
         convex,
         petId: String(petId),
         actorUserId: userId ? String(userId) : undefined,
+        category: "vaccinations",
         summary: `💉 *Vacina Registrada:* ${data.name} (aplicada em ${data.applicationDate})`,
       });
 

@@ -1,5 +1,9 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
+import {
+  NotificationCategory,
+  resolveNotificationCategories,
+} from "./notificationPreferences";
 
 function getDefaultConvexClient(): ConvexHttpClient {
   return new ConvexHttpClient(
@@ -119,6 +123,9 @@ export async function notifyPetMembersOnWhatsApp(params: {
   petId: string;
   actorUserId?: string;
   summary: string;
+  category?: NotificationCategory;
+  categories?: NotificationCategory[];
+  actionTaken?: string;
   phoneIdOverride?: string;
 }): Promise<{
   notifiedCount: number;
@@ -129,10 +136,18 @@ export async function notifyPetMembersOnWhatsApp(params: {
       return { notifiedCount: 0, recipients: [] };
     }
 
+    const categoriesToFilter =
+      params.categories && params.categories.length > 0
+        ? params.categories
+        : params.category
+        ? [params.category]
+        : resolveNotificationCategories(params.actionTaken, params.summary);
+
     const client = params.convex || getDefaultConvexClient();
     const data = await client.query(api.whatsapp.getPetNotificationRecipients, {
       petId: params.petId as any,
       excludeUserId: params.actorUserId ? (params.actorUserId as any) : undefined,
+      categories: categoriesToFilter,
     });
 
     const recipients = data?.recipients || [];
@@ -214,6 +229,7 @@ export async function checkAndSendLowStockAlerts(params: {
 
     const recipientData = await client.query(api.whatsapp.getPetNotificationRecipients, {
       petId: params.petId as any,
+      category: "stock",
     });
     const petName = recipientData?.petName || "Pet";
     const recipients = recipientData?.recipients || [];

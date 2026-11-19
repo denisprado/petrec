@@ -26,9 +26,17 @@ import {
   Share2,
   Bell,
   BellOff,
+  SlidersHorizontal,
 } from "lucide-react";
 import { format, differenceInCalendarDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import {
+  getDefaultNotificationPreferences,
+  NOTIFICATION_CATEGORIES,
+  NotificationCategory,
+  NotificationPreferences,
+  resolveNotificationPreferences,
+} from "@/lib/notificationPreferences";
 
 export default function TutoresPage() {
   const { activePetId, setActivePetId, pets, currentUser, refreshTrigger, triggerRefresh, permissions } = useApp();
@@ -50,8 +58,12 @@ export default function TutoresPage() {
   const [invitePhone, setInvitePhone] = useState("");
   const [inviteRole, setInviteRole] = useState("caregiver");
   const [inviteAccessDays, setInviteAccessDays] = useState<string>("30");
+  const [inviteNotifPrefs, setInviteNotifPrefs] = useState<NotificationPreferences>(() =>
+    getDefaultNotificationPreferences("caregiver")
+  );
   const [createdInvite, setCreatedInvite] = useState<any | null>(null);
   const [lastInvitePhone, setLastInvitePhone] = useState("");
+  const [savingNotifMemberId, setSavingNotifMemberId] = useState<string | null>(null);
 
   // Vincular a outro pet por código/ID e convite geral de conta
   const [joinCodeInput, setJoinCodeInput] = useState("");
@@ -173,6 +185,7 @@ export default function TutoresPage() {
           role: finalRole,
           accessDays: finalAccessDays,
           canPrescribe: finalRole === "vet_limited",
+          notificationPreferences: inviteNotifPrefs,
         }),
       });
 
@@ -221,17 +234,32 @@ export default function TutoresPage() {
   };
 
   const handleToggleNotifications = async (memberId: string, currentlyEnabled: boolean) => {
+    setSavingNotifMemberId(memberId);
     try {
       const nextValue = !currentlyEnabled;
       const res = await fetch("/api/tutores", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ memberId, notifyWhatsApp: nextValue }),
+        body: JSON.stringify({
+          memberId,
+          notifyWhatsApp: nextValue,
+          actorUserId: currentUser?.id,
+        }),
       });
       const json = await res.json();
       if (res.ok) {
         setMembers((prev) =>
-          prev.map((m) => (m.id === memberId ? { ...m, notifyWhatsApp: nextValue } : m))
+          prev.map((m) =>
+            m.id === memberId
+              ? {
+                  ...m,
+                  notifyWhatsApp: nextValue,
+                  ...(json.notificationPreferences
+                    ? { notificationPreferences: json.notificationPreferences }
+                    : {}),
+                }
+              : m
+          )
         );
         setFeedback(
           nextValue
@@ -245,6 +273,115 @@ export default function TutoresPage() {
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setSavingNotifMemberId(null);
+    }
+  };
+
+  const handleUpdateNotificationCategory = async (
+    member: any,
+    category: NotificationCategory,
+    nextValue: boolean
+  ) => {
+    setSavingNotifMemberId(member.id);
+    try {
+      const res = await fetch("/api/tutores", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memberId: member.id,
+          categoryUpdates: { [category]: nextValue },
+          actorUserId: currentUser?.id,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setMembers((prev) =>
+          prev.map((m) =>
+            m.id === member.id
+              ? {
+                  ...m,
+                  notifyWhatsApp: json.notifyWhatsApp,
+                  notificationPreferences: json.notificationPreferences,
+                }
+              : m
+          )
+        );
+        setFeedback("Preferências de notificação atualizadas!");
+        setTimeout(() => setFeedback(null), 2500);
+        triggerRefresh();
+      } else {
+        alert(json.error || "Erro ao atualizar categoria de notificação.");
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingNotifMemberId(null);
+    }
+  };
+
+  const handleApplyNotificationPreset = async (
+    member: any,
+    preset: "clinical" | "all" | "none"
+  ) => {
+    setSavingNotifMemberId(member.id);
+    try {
+      const nextPrefs: NotificationPreferences =
+        preset === "all"
+          ? {
+              stock: true,
+              medications: true,
+              feeding: true,
+              vaccinations: true,
+              notes: true,
+              appointments: true,
+            }
+          : preset === "none"
+          ? {
+              stock: false,
+              medications: false,
+              feeding: false,
+              vaccinations: false,
+              notes: false,
+              appointments: false,
+            }
+          : member.role === "clinic_admin" || member.role === "caregiver_pro"
+          ? getDefaultNotificationPreferences(member.role)
+          : getDefaultNotificationPreferences("vet_limited");
+
+      const res = await fetch("/api/tutores", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memberId: member.id,
+          notifyWhatsApp: preset !== "none",
+          notificationPreferences: nextPrefs,
+          actorUserId: currentUser?.id,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setMembers((prev) =>
+          prev.map((m) =>
+            m.id === member.id
+              ? {
+                  ...m,
+                  notifyWhatsApp: json.notifyWhatsApp,
+                  notificationPreferences: json.notificationPreferences,
+                }
+              : m
+          )
+        );
+        setFeedback("Perfil de notificações aplicado!");
+        setTimeout(() => setFeedback(null), 2500);
+        triggerRefresh();
+      } else {
+        alert(json.error || "Erro ao aplicar perfil de notificações.");
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingNotifMemberId(null);
     }
   };
 
@@ -314,6 +451,91 @@ export default function TutoresPage() {
 
   const familyMembers = members.filter((m) => !isProRole(m.role));
   const proMembers = members.filter((m) => isProRole(m.role));
+  const selfMember = members.find((m) => m.user?.id === currentUser?.id);
+  const canEditMemberNotifs = (member: any) =>
+    member.user?.id === currentUser?.id || permissions.canManageMembers;
+
+  const renderMemberNotificationChips = (member: any) => {
+    const prefs = resolveNotificationPreferences(
+      member.role,
+      member.notificationPreferences
+    );
+    const editable = canEditMemberNotifs(member);
+    const isBusy = savingNotifMemberId === member.id;
+    const isMasterOff = member.notifyWhatsApp === false;
+
+    return (
+      <div className="mt-2 pt-2 border-t border-slate-200/70 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
+            <SlidersHorizontal className="w-3 h-3 text-emerald-600" />
+            <span>Tipos de notificação no WhatsApp:</span>
+            {isMasterOff && (
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded">
+                Geral silenciado
+              </span>
+            )}
+          </span>
+          {editable && (
+            <div className="flex items-center gap-1 text-[10px]">
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => handleApplyNotificationPreset(member, "all")}
+                className="px-2 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-800 font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                Todas
+              </button>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => handleApplyNotificationPreset(member, "clinical")}
+                className="px-2 py-0.5 rounded bg-slate-100 hover:bg-indigo-100 text-slate-700 hover:text-indigo-800 font-semibold transition cursor-pointer disabled:opacity-50"
+                title="Notas clínicas, vacinas, remédios e consultas (sem compras/estoque)"
+              >
+                Padrão Clínico
+              </button>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => handleApplyNotificationPreset(member, "none")}
+                className="px-2 py-0.5 rounded bg-slate-100 hover:bg-rose-100 text-slate-700 hover:text-rose-800 font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                Nenhuma
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          {NOTIFICATION_CATEGORIES.map((cat) => {
+            const active = prefs[cat.key];
+            return (
+              <button
+                key={cat.key}
+                type="button"
+                disabled={!editable || isBusy}
+                onClick={() =>
+                  handleUpdateNotificationCategory(member, cat.key, !active)
+                }
+                title={cat.description}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition ${
+                  active && !isMasterOff
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
+                    : active && isMasterOff
+                    ? "bg-slate-100 text-slate-500 border-slate-200 opacity-70"
+                    : "bg-slate-50 text-slate-400 border-slate-200 line-through hover:bg-slate-100"
+                } ${editable ? "cursor-pointer" : "cursor-default"}`}
+              >
+                <span>{cat.emoji}</span>
+                <span>{cat.shortLabel}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-4 sm:py-6 space-y-6">
@@ -333,7 +555,7 @@ export default function TutoresPage() {
             <span>Compartilhamento, Tutores & Equipe Médica</span>
           </h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Gerencie os tutores da família e credencie profissionais de saúde com controle rígido de privacidade.
+            Gerencie os tutores da família, profissionais de saúde e quem recebe cada tipo de notificação no WhatsApp.
           </p>
         </div>
 
@@ -342,6 +564,9 @@ export default function TutoresPage() {
             onClick={() => {
               setCreatedInvite(null);
               setLastInvitePhone("");
+              setInviteType("family");
+              setInviteRole("caregiver");
+              setInviteNotifPrefs(getDefaultNotificationPreferences("caregiver"));
               setShowInviteModal(true);
             }}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
@@ -567,6 +792,108 @@ export default function TutoresPage() {
         </div>
       </section>
 
+      {/* Minhas Preferências de Notificação neste Pet */}
+      {selfMember && activePetId && (() => {
+        const selfPrefs = resolveNotificationPreferences(
+          selfMember.role,
+          selfMember.notificationPreferences
+        );
+        const selfMasterOn = selfMember.notifyWhatsApp !== false;
+        const isBusy = savingNotifMemberId === selfMember.id;
+        return (
+          <section className="bg-white rounded-2xl border border-emerald-200 p-4 sm:p-5 shadow-2xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-50 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <Bell className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Minhas Preferências de Notificação em {petInfo?.name || "este Pet"}
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {selfMember.user?.whatsappPhoneNumber
+                      ? `Escolha quais avisos de outros tutores você deseja receber no WhatsApp (${selfMember.user.whatsappPhoneNumber}).`
+                      : "Configure quais categorias deseja receber assim que conectar seu WhatsApp na aba WhatsApp."}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() =>
+                  handleToggleNotifications(selfMember.id, selfMasterOn)
+                }
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer disabled:opacity-50 ${
+                  selfMasterOn
+                    ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
+                    : "bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200"
+                }`}
+              >
+                {selfMasterOn ? (
+                  <>
+                    <Bell className="w-3.5 h-3.5" />
+                    <span>Recebimento Geral: Ativo</span>
+                  </>
+                ) : (
+                  <>
+                    <BellOff className="w-3.5 h-3.5" />
+                    <span>Tudo Silenciado</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {NOTIFICATION_CATEGORIES.map((cat) => {
+                const active = selfPrefs[cat.key];
+                return (
+                  <button
+                    key={cat.key}
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() =>
+                      handleUpdateNotificationCategory(
+                        selfMember,
+                        cat.key,
+                        !active
+                      )
+                    }
+                    className={`p-3 rounded-xl border text-left transition flex items-start justify-between gap-2 cursor-pointer disabled:opacity-50 ${
+                      active && selfMasterOn
+                        ? "bg-emerald-50/70 border-emerald-200 hover:bg-emerald-100/70"
+                        : active
+                        ? "bg-slate-50 border-slate-200 opacity-75 hover:bg-slate-100"
+                        : "bg-slate-50/60 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                        <span>{cat.emoji}</span>
+                        <span>{cat.label}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                        {cat.description}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                        active
+                          ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                          : "bg-slate-200 text-slate-600 border-slate-300"
+                      }`}
+                    >
+                      {active ? "Ativo" : "Off"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })()}
+
       {/* Seção 1: Equipe Médica & Profissionais Credenciados */}
       <section className="bg-white rounded-2xl border border-indigo-100 p-4 sm:p-5 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-indigo-50 pb-3">
@@ -599,6 +926,7 @@ export default function TutoresPage() {
                 onClick={() => {
                   setInviteType("professional");
                   setInviteRole("vet_limited");
+                  setInviteNotifPrefs(getDefaultNotificationPreferences("vet_limited"));
                   setShowInviteModal(true);
                 }}
                 className="text-xs text-indigo-600 font-bold hover:underline"
@@ -753,6 +1081,8 @@ export default function TutoresPage() {
                       )}
                     </div>
                   </div>
+
+                  {renderMemberNotificationChips(member)}
                 </div>
               );
             })}
@@ -772,92 +1102,93 @@ export default function TutoresPage() {
             const isSelf = member.user.id === currentUser.id;
 
             return (
-              <div
-                key={member.id}
-                className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <img
-                    src={member.user.avatar || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100"}
-                    alt={member.user.name}
-                    className="w-11 h-11 rounded-full object-cover ring-2 ring-slate-200"
-                  />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-slate-900 text-sm">
-                        {member.user.name}
+              <div key={member.id} className="py-3.5 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={member.user.avatar || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100"}
+                      alt={member.user.name}
+                      className="w-11 h-11 rounded-full object-cover ring-2 ring-slate-200"
+                    />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900 text-sm">
+                          {member.user.name}
+                        </span>
+                        {isSelf && (
+                          <span className="text-[10px] bg-slate-200 text-slate-700 font-bold px-1.5 py-0.5 rounded">
+                            Você
+                          </span>
+                        )}
+                        {member.isPrimary && (
+                          <span className="text-[10px] bg-purple-200 text-purple-900 font-bold px-1.5 py-0.5 rounded">
+                            Principal
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500">{member.user.email}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        {roleInfo.desc}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
+                    {member.user?.whatsappPhoneNumber ? (
+                      <button
+                        type="button"
+                        disabled={!(isSelf || permissions.canManageMembers)}
+                        onClick={() =>
+                          handleToggleNotifications(member.id, member.notifyWhatsApp !== false)
+                        }
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold transition ${
+                          member.notifyWhatsApp !== false
+                            ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
+                            : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                        } ${
+                          isSelf || permissions.canManageMembers
+                            ? "cursor-pointer"
+                            : "opacity-75 cursor-default"
+                        }`}
+                        title="Ativar ou silenciar notificações pelo WhatsApp quando outro tutor registrar algo"
+                      >
+                        {member.notifyWhatsApp !== false ? (
+                          <>
+                            <Bell className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Alertas WhatsApp: Ativos</span>
+                          </>
+                        ) : (
+                          <>
+                            <BellOff className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Alertas WhatsApp: Silenciados</span>
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-400 border border-slate-200 text-[11px] font-medium">
+                        Sem WhatsApp cadastrado
                       </span>
-                      {isSelf && (
-                        <span className="text-[10px] bg-slate-200 text-slate-700 font-bold px-1.5 py-0.5 rounded">
-                          Você
-                        </span>
-                      )}
-                      {member.isPrimary && (
-                        <span className="text-[10px] bg-purple-200 text-purple-900 font-bold px-1.5 py-0.5 rounded">
-                          Principal
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-slate-500">{member.user.email}</div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      {roleInfo.desc}
-                    </div>
+                    )}
+
+                    <span
+                      className={`text-xs font-bold px-3 py-1 rounded-full border ${roleInfo.color}`}
+                    >
+                      {roleInfo.label}
+                    </span>
+
+                    {permissions.canManageMembers && !member.isPrimary && !isSelf && (
+                      <button
+                        onClick={() => handleRemoveMember(member.id, member.user.name)}
+                        className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg transition"
+                        title="Remover Tutor"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
-                  {member.user?.whatsappPhoneNumber ? (
-                    <button
-                      type="button"
-                      disabled={!(isSelf || permissions.canManageMembers)}
-                      onClick={() =>
-                        handleToggleNotifications(member.id, member.notifyWhatsApp !== false)
-                      }
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold transition ${
-                        member.notifyWhatsApp !== false
-                          ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
-                          : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
-                      } ${
-                        isSelf || permissions.canManageMembers
-                          ? "cursor-pointer"
-                          : "opacity-75 cursor-default"
-                      }`}
-                      title="Ativar ou silenciar notificações pelo WhatsApp quando outro tutor registrar algo"
-                    >
-                      {member.notifyWhatsApp !== false ? (
-                        <>
-                          <Bell className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Alertas WhatsApp: Ativos</span>
-                        </>
-                      ) : (
-                        <>
-                          <BellOff className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Alertas WhatsApp: Silenciados</span>
-                        </>
-                      )}
-                    </button>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-400 border border-slate-200 text-[11px] font-medium">
-                      Sem WhatsApp cadastrado
-                    </span>
-                  )}
-
-                  <span
-                    className={`text-xs font-bold px-3 py-1 rounded-full border ${roleInfo.color}`}
-                  >
-                    {roleInfo.label}
-                  </span>
-
-                  {permissions.canManageMembers && !member.isPrimary && !isSelf && (
-                    <button
-                      onClick={() => handleRemoveMember(member.id, member.user.name)}
-                      className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg transition"
-                      title="Remover Tutor"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
+                {renderMemberNotificationChips(member)}
               </div>
             );
           })}
@@ -985,7 +1316,7 @@ export default function TutoresPage() {
       {/* Modal Convidar Tutor ou Profissional */}
       {showInviteModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-lg font-black text-slate-900">
                 Conectar Novo Membro ou Profissional
@@ -1005,6 +1336,7 @@ export default function TutoresPage() {
                 onClick={() => {
                   setInviteType("family");
                   setInviteRole("caregiver");
+                  setInviteNotifPrefs(getDefaultNotificationPreferences("caregiver"));
                 }}
                 className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
                   inviteType === "family"
@@ -1019,6 +1351,7 @@ export default function TutoresPage() {
                 onClick={() => {
                   setInviteType("professional");
                   setInviteRole("vet_limited");
+                  setInviteNotifPrefs(getDefaultNotificationPreferences("vet_limited"));
                 }}
                 className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1 ${
                   inviteType === "professional"
@@ -1095,7 +1428,11 @@ export default function TutoresPage() {
                   {inviteType === "family" ? (
                     <select
                       value={inviteRole}
-                      onChange={(e) => setInviteRole(e.target.value)}
+                      onChange={(e) => {
+                        const nextRole = e.target.value;
+                        setInviteRole(nextRole);
+                        setInviteNotifPrefs(getDefaultNotificationPreferences(nextRole));
+                      }}
                       className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                     >
                       <option value="co_owner">Co-owner (Coproprietário - Aprova prescrições)</option>
@@ -1105,7 +1442,11 @@ export default function TutoresPage() {
                   ) : (
                     <select
                       value={inviteRole}
-                      onChange={(e) => setInviteRole(e.target.value)}
+                      onChange={(e) => {
+                        const nextRole = e.target.value;
+                        setInviteRole(nextRole);
+                        setInviteNotifPrefs(getDefaultNotificationPreferences(nextRole));
+                      }}
                       className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                     >
                       <option value="vet_limited">
@@ -1141,6 +1482,58 @@ export default function TutoresPage() {
                     </p>
                   </div>
                 )}
+
+                <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Bell className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Notificações no WhatsApp para este membro</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setInviteNotifPrefs(getDefaultNotificationPreferences(inviteRole))
+                      }
+                      className="text-[10px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                    >
+                      Restaurar padrão do papel
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {inviteRole === "vet_limited"
+                      ? "Por padrão, veterinários recebem notas clínicas, vacinas, remédios e consultas, mas NÃO recebem avisos de compras ou mudanças de estoque."
+                      : "Selecione quais categorias de atividade este membro deve receber no WhatsApp."}
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+                    {NOTIFICATION_CATEGORIES.map((cat) => {
+                      const checked = inviteNotifPrefs[cat.key];
+                      return (
+                        <label
+                          key={cat.key}
+                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition ${
+                            checked
+                              ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+                              : "bg-white border-slate-200 text-slate-500"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) =>
+                              setInviteNotifPrefs((prev) => ({
+                                ...prev,
+                                [cat.key]: e.target.checked,
+                              }))
+                            }
+                            className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span>{cat.emoji}</span>
+                          <span className="truncate">{cat.shortLabel}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
                   <button

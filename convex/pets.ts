@@ -1,5 +1,9 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import {
+  getDefaultNotificationPreferences,
+  resolveNotificationPreferences,
+} from "./notificationPrefs";
 
 const SHARE_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -74,6 +78,10 @@ export const getById = query({
         return {
           ...m,
           id: m._id,
+          notificationPreferences: resolveNotificationPreferences(
+            m.role,
+            m.notificationPreferences
+          ),
           user: {
             ...safeUser,
             id: user._id,
@@ -162,6 +170,8 @@ export const create = mutation({
       userId,
       role: "owner",
       isPrimary: true,
+      notifyWhatsApp: true,
+      notificationPreferences: getDefaultNotificationPreferences("owner"),
     });
 
     // 3. Se informou peso, gravar no histórico

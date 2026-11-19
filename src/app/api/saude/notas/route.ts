@@ -70,6 +70,7 @@ export async function POST(request: Request) {
         convex,
         petId: String(petId),
         actorUserId: String(authorId),
+        category: "notes",
         summary: `📋 *Nova Nota Clínica no Prontuário:*\n"${content.trim()}"`,
       });
     }

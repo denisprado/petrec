@@ -91,6 +91,7 @@ export async function POST(request: Request) {
           convex,
           petId: String(targetPetId),
           actorUserId: userId ? String(userId) : undefined,
+          category: "feeding",
           summary: `🥣 *Exceção de Alimentação:* ${item?.name || "Ração"} (${Number(
             quantityNotConsumed || quantity || 0
           )} ${item?.unit || "g"} preservados — ${
@@ -145,6 +146,7 @@ export async function POST(request: Request) {
         convex,
         petId: String(petId),
         actorUserId: userId ? String(userId) : undefined,
+        category: category === "racao" ? "feeding" : "stock",
         summary: `📦 *Novo Item no Estoque:* ${name.trim()} (${Number(
           currentQuantity || 0
         )} ${unit.trim()})`,
@@ -186,6 +188,7 @@ export async function POST(request: Request) {
         convex,
         petId: String(updatedItem.petId),
         actorUserId: userId ? String(userId) : undefined,
+        category: type === "consumption" ? "feeding" : "stock",
         summary: `📦 *${actionLabel}:* ${updatedItem.name} (${Number(quantity)} ${
           updatedItem.unit
         } | Saldo atual: *${updatedItem.currentQuantity} ${updatedItem.unit}*)`,

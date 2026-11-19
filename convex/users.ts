@@ -1,6 +1,13 @@
 import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+import {
+  getDefaultNotificationPreferences,
+  notificationPreferencesPartialValidator,
+  notificationPreferencesValidator,
+  NotificationPreferences,
+  resolveNotificationPreferences,
+} from "./notificationPrefs";
 
 const SHARE_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -97,12 +104,17 @@ async function applyCodeLinkForUser(
   let role = preferredRole && preferredRole !== "owner" ? preferredRole : "caregiver";
   let accessDays: number | undefined;
   let canPrescribe: boolean | undefined;
+  let notificationPreferences = getDefaultNotificationPreferences(role);
 
   if (resolved.kind === "invitation") {
     const inv = resolved.invitation;
     role = inv.role || "caregiver";
     accessDays = inv.accessDays;
     canPrescribe = inv.canPrescribe;
+    notificationPreferences = resolveNotificationPreferences(
+      role,
+      inv.notificationPreferences
+    );
 
     await ctx.db.patch(inv._id, {
       acceptedAt: nowIso,
@@ -130,6 +142,10 @@ async function applyCodeLinkForUser(
         role,
         ...(accessExpiresAt ? { accessExpiresAt } : {}),
         ...(canPrescribe !== undefined ? { canPrescribe } : {}),
+        notificationPreferences: resolveNotificationPreferences(
+          role,
+          existingMember.notificationPreferences || notificationPreferences
+        ),
       });
     }
   } else {
@@ -140,6 +156,8 @@ async function applyCodeLinkForUser(
       isPrimary: false,
       canPrescribe,
       accessExpiresAt,
+      notifyWhatsApp: true,
+      notificationPreferences,
     });
   }
 
@@ -393,6 +411,11 @@ export const register = mutation({
           isPrimary: inv.role === "owner",
           canPrescribe: inv.canPrescribe,
           accessExpiresAt: expiresAt,
+          notifyWhatsApp: true,
+          notificationPreferences: resolveNotificationPreferences(
+            inv.role,
+            inv.notificationPreferences
+          ),
         });
       }
     }
@@ -414,6 +437,8 @@ export const register = mutation({
             userId,
             role: roleToAssign,
             isPrimary: roleToAssign === "owner",
+            notifyWhatsApp: true,
+            notificationPreferences: getDefaultNotificationPreferences(roleToAssign),
           });
         }
       }
@@ -604,6 +629,7 @@ export const inviteOrAddMember = mutation({
     crmv: v.optional(v.string()),
     clinicName: v.optional(v.string()),
     specialties: v.optional(v.string()),
+    notificationPreferences: v.optional(notificationPreferencesValidator),
   },
   handler: async (ctx, args) => {
     const email = args.invitedEmail ? args.invitedEmail.toLowerCase().trim() : "";
@@ -665,6 +691,10 @@ export const inviteOrAddMember = mutation({
       args.accessDays && args.accessDays > 0
         ? new Date(Date.now() + args.accessDays * 86400000).toISOString()
         : undefined;
+    const effectiveNotificationPrefs = resolveNotificationPreferences(
+      args.role,
+      args.notificationPreferences
+    );
 
     let memberId = null;
     if (user) {
@@ -676,6 +706,12 @@ export const inviteOrAddMember = mutation({
         .first();
 
       if (existingMember) {
+        const nextMemberPrefs = args.notificationPreferences
+          ? effectiveNotificationPrefs
+          : resolveNotificationPreferences(
+              args.role,
+              existingMember.notificationPreferences
+            );
         await ctx.db.patch(existingMember._id, {
           role: args.role,
           accessExpiresAt,
@@ -683,6 +719,7 @@ export const inviteOrAddMember = mutation({
           crmv: args.crmv,
           clinicName: args.clinicName,
           specialties: args.specialties,
+          notificationPreferences: nextMemberPrefs,
         });
         memberId = existingMember._id;
       } else {
@@ -696,6 +733,8 @@ export const inviteOrAddMember = mutation({
           crmv: args.crmv,
           clinicName: args.clinicName,
           specialties: args.specialties,
+          notifyWhatsApp: true,
+          notificationPreferences: effectiveNotificationPrefs,
         });
       }
     }
@@ -722,6 +761,7 @@ export const inviteOrAddMember = mutation({
       token,
       accessDays: args.accessDays,
       canPrescribe: args.canPrescribe,
+      notificationPreferences: effectiveNotificationPrefs,
       createdAt: nowIso,
       acceptedAt: user?.passwordHash ? nowIso : undefined,
       acceptedByUserId: user?.passwordHash ? user._id : undefined,
@@ -755,17 +795,74 @@ export const inviteOrAddMember = mutation({
 export const toggleMemberWhatsAppNotifications = mutation({
   args: {
     memberId: v.id("petMembers"),
-    notifyWhatsApp: v.boolean(),
+    notifyWhatsApp: v.optional(v.boolean()),
+    notificationPreferences: v.optional(notificationPreferencesValidator),
+    categoryUpdates: v.optional(notificationPreferencesPartialValidator),
+    actorUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
     const member = await ctx.db.get(args.memberId);
     if (!member) {
       throw new Error("Vínculo de membro não encontrado.");
     }
+
+    if (args.actorUserId && String(member.userId) !== String(args.actorUserId)) {
+      const actorMember = await ctx.db
+        .query("petMembers")
+        .withIndex("by_pet_and_user", (q) =>
+          q.eq("petId", member.petId).eq("userId", args.actorUserId!)
+        )
+        .first();
+
+      const canManageOthers =
+        Boolean(actorMember) &&
+        (actorMember!.isPrimary === true ||
+          actorMember!.role === "owner" ||
+          actorMember!.role === "co_owner");
+
+      if (!canManageOthers) {
+        throw new Error(
+          "Apenas o proprietário do pet ou o próprio usuário pode alterar estas notificações."
+        );
+      }
+    }
+
+    const basePrefs = resolveNotificationPreferences(
+      member.role,
+      member.notificationPreferences
+    );
+    const nextPrefs: NotificationPreferences = args.notificationPreferences
+      ? { ...args.notificationPreferences }
+      : { ...basePrefs };
+
+    let activatedAnyCategory = false;
+    if (args.categoryUpdates) {
+      for (const [key, val] of Object.entries(args.categoryUpdates)) {
+        if (typeof val === "boolean" && key in nextPrefs) {
+          nextPrefs[key as keyof NotificationPreferences] = val;
+          if (val) activatedAnyCategory = true;
+        }
+      }
+    }
+
+    let nextNotifyWhatsApp =
+      member.notifyWhatsApp === undefined ? true : member.notifyWhatsApp;
+    if (typeof args.notifyWhatsApp === "boolean") {
+      nextNotifyWhatsApp = args.notifyWhatsApp;
+    } else if (activatedAnyCategory && member.notifyWhatsApp === false) {
+      nextNotifyWhatsApp = true;
+    }
+
     await ctx.db.patch(args.memberId, {
-      notifyWhatsApp: args.notifyWhatsApp,
+      notifyWhatsApp: nextNotifyWhatsApp,
+      notificationPreferences: nextPrefs,
     });
-    return { success: true, notifyWhatsApp: args.notifyWhatsApp };
+
+    return {
+      success: true,
+      notifyWhatsApp: nextNotifyWhatsApp,
+      notificationPreferences: nextPrefs,
+    };
   },
 });
 

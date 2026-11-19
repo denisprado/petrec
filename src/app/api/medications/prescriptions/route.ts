@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../../convex/_generated/api";
+import { notifyPetMembersOnWhatsApp } from "@/lib/whatsappNotifier";
 
 const convex = new ConvexHttpClient(
   process.env.NEXT_PUBLIC_CONVEX_URL ||
@@ -80,6 +81,16 @@ export async function POST(request: Request) {
       notes: clinicalNotes || undefined,
     });
 
+    await notifyPetMembersOnWhatsApp({
+      convex,
+      petId: String(petId),
+      actorUserId: String(prescribedById),
+      category: "medications",
+      summary: `🩺 *Nova Prescrição Médica:* ${name.trim()}${
+        dosage ? ` (${dosage})` : ""
+      } — aguardando aprovação do tutor`,
+    });
+
     return NextResponse.json({
       success: true,
       medicationId: medId,
@@ -110,22 +121,44 @@ export async function PATCH(request: Request) {
     }
 
     if (action === "approve") {
-      await convex.mutation(api.medications.approvePrescription, {
+      const res = await convex.mutation(api.medications.approvePrescription, {
         medicationId: medicationId as any,
         userId: userId as any,
         initialStockQuantity: Number(initialStockQuantity) || 0,
       });
+
+      if (res?.petId) {
+        await notifyPetMembersOnWhatsApp({
+          convex,
+          petId: String(res.petId),
+          actorUserId: String(userId),
+          category: "medications",
+          summary: `✅ *Prescrição Aprovada:* ${res.medicationName || "Medicamento"} ativado na rotina`,
+        });
+      }
 
       return NextResponse.json({
         success: true,
         action: "approved",
       });
     } else if (action === "reject") {
-      await convex.mutation(api.medications.rejectPrescription, {
+      const res = await convex.mutation(api.medications.rejectPrescription, {
         medicationId: medicationId as any,
         userId: userId as any,
         notes: notes || undefined,
       });
+
+      if (res?.petId) {
+        await notifyPetMembersOnWhatsApp({
+          convex,
+          petId: String(res.petId),
+          actorUserId: String(userId),
+          category: "medications",
+          summary: `❌ *Prescrição Recusada:* ${res.medicationName || "Medicamento"}${
+            notes ? ` (${notes})` : ""
+          }`,
+        });
+      }
 
       return NextResponse.json({
         success: true,

@@ -12,6 +12,7 @@ import type * as files from "../files.js";
 import type * as health from "../health.js";
 import type * as inventory from "../inventory.js";
 import type * as medications from "../medications.js";
+import type * as notificationPrefs from "../notificationPrefs.js";
 import type * as pets from "../pets.js";
 import type * as seed from "../seed.js";
 import type * as users from "../users.js";
@@ -28,6 +29,7 @@ declare const fullApi: ApiFromModules<{
   health: typeof health;
   inventory: typeof inventory;
   medications: typeof medications;
+  notificationPrefs: typeof notificationPrefs;
   pets: typeof pets;
   seed: typeof seed;
   users: typeof users;

@@ -1,5 +1,9 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import {
+  NotificationCategoryKey,
+  resolveNotificationPreferences,
+} from "./notificationPrefs";
 
 export const getSession = query({
   args: { userId: v.id("users") },
@@ -319,6 +323,8 @@ export const getPetNotificationRecipients = query({
   args: {
     petId: v.id("pets"),
     excludeUserId: v.optional(v.id("users")),
+    category: v.optional(v.string()),
+    categories: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const pet = await ctx.db.get(args.petId);
@@ -329,6 +335,14 @@ export const getPetNotificationRecipients = query({
       .withIndex("by_pet", (q) => q.eq("petId", args.petId))
       .collect();
 
+    const filterCategories = Array.from(
+      new Set(
+        [...(args.categories || []), ...(args.category ? [args.category] : [])]
+          .map((c) => c.trim())
+          .filter(Boolean)
+      )
+    ) as NotificationCategoryKey[];
+
     const now = Date.now();
     const seenPhones = new Set<string>();
     const recipients: Array<{
@@ -337,6 +351,7 @@ export const getPetNotificationRecipients = query({
       name: string;
       phone: string;
       role: string;
+      notificationPreferences: ReturnType<typeof resolveNotificationPreferences>;
     }> = [];
 
     for (const m of memberships) {
@@ -345,6 +360,18 @@ export const getPetNotificationRecipients = query({
       if (m.accessExpiresAt) {
         const expMs = new Date(m.accessExpiresAt).getTime();
         if (!isNaN(expMs) && expMs < now) continue;
+      }
+
+      const prefs = resolveNotificationPreferences(
+        m.role,
+        m.notificationPreferences
+      );
+
+      if (filterCategories.length > 0) {
+        const wantsAtLeastOne = filterCategories.some((cat) =>
+          cat in prefs ? prefs[cat as NotificationCategoryKey] === true : true
+        );
+        if (!wantsAtLeastOne) continue;
       }
 
       const user = await ctx.db.get(m.userId);
@@ -361,6 +388,7 @@ export const getPetNotificationRecipients = query({
         name: user.name,
         phone,
         role: m.role,
+        notificationPreferences: prefs,
       });
     }
 

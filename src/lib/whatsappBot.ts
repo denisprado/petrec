@@ -273,6 +273,7 @@ export async function processWhatsAppMessage(
           petId: target.petId,
           actorUserId: tracker.actorUserId,
           summary: cleanSummary,
+          actionTaken: result.actionTaken,
           phoneIdOverride: params.metaPhoneNumberId,
         });
 

@@ -97,6 +97,7 @@ export async function POST(request: Request) {
       convex,
       petId: String(petId),
       actorUserId: String(userId),
+      category: "medications",
       summary: `💊 *Novo Medicamento Cadastrado:* ${name.trim()}${
         dosage ? ` (${dosage})` : ""
       } — horários: ${parsedTimes.join(", ")}`,
@@ -171,6 +172,7 @@ export async function PUT(request: Request) {
         convex,
         petId: String(targetPetId),
         actorUserId: String(userId),
+        category: "medications",
         summary: `✏️ *Medicamento Atualizado:* ${name.trim()}${
           dosage ? ` (${dosage})` : ""
         } — horários: ${parsedTimes.join(", ")}`,
@@ -211,6 +213,7 @@ export async function DELETE(request: Request) {
         convex,
         petId: String(result.petId),
         actorUserId: String(userId),
+        category: "medications",
         summary: `🗑️ *Medicamento Excluído:* ${result.medicationName || "Medicamento"}`,
       });
     }
@@ -249,6 +252,7 @@ export async function PATCH(request: Request) {
         convex,
         petId: String(result.petId),
         actorUserId: userId ? String(userId) : undefined,
+        category: "medications",
         summary: `💊 *Dose ${
           status === "skipped" ? "Pulada / Não Administrada" : "Administrada"
         }:* ${result.medicationName || "Medicamento"}${notes ? ` (${notes})` : ""}`,

@@ -87,6 +87,7 @@ export async function POST(request: Request) {
           convex,
           petId: String(joined.pet.id),
           actorUserId: String(userId),
+          category: "appointments",
           summary: `🤝 *Novo Tutor Vinculado:* passou a acompanhar este pet junto com você!`,
         });
       }
@@ -110,6 +111,7 @@ export async function POST(request: Request) {
       crmv,
       clinicName,
       specialties,
+      notificationPreferences,
     } = body;
 
     if (!petId) {
@@ -139,6 +141,10 @@ export async function POST(request: Request) {
       crmv: crmv ? String(crmv) : undefined,
       clinicName: clinicName ? String(clinicName) : undefined,
       specialties: specialties ? String(specialties) : undefined,
+      notificationPreferences:
+        notificationPreferences && typeof notificationPreferences === "object"
+          ? notificationPreferences
+          : undefined,
     });
 
     return NextResponse.json({
@@ -162,18 +168,46 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const body = await request.json();
-    const { memberId, notifyWhatsApp } = body || {};
+    const {
+      memberId,
+      notifyWhatsApp,
+      notificationPreferences,
+      categoryUpdates,
+      actorUserId,
+    } = body || {};
 
-    if (!memberId || typeof notifyWhatsApp !== "boolean") {
+    if (
+      !memberId ||
+      (typeof notifyWhatsApp !== "boolean" &&
+        !notificationPreferences &&
+        !categoryUpdates)
+    ) {
       return NextResponse.json(
-        { error: "Informe memberId e notifyWhatsApp (boolean)." },
+        {
+          error:
+            "Informe memberId e ao menos notifyWhatsApp, notificationPreferences ou categoryUpdates.",
+        },
         { status: 400 }
       );
     }
 
+    const validActorId =
+      actorUserId && typeof actorUserId === "string" && actorUserId.length > 10
+        ? (actorUserId as any)
+        : undefined;
+
     const result = await convex.mutation(api.users.toggleMemberWhatsAppNotifications, {
       memberId: memberId as any,
-      notifyWhatsApp,
+      notifyWhatsApp: typeof notifyWhatsApp === "boolean" ? notifyWhatsApp : undefined,
+      notificationPreferences:
+        notificationPreferences && typeof notificationPreferences === "object"
+          ? notificationPreferences
+          : undefined,
+      categoryUpdates:
+        categoryUpdates && typeof categoryUpdates === "object"
+          ? categoryUpdates
+          : undefined,
+      actorUserId: validActorId,
     });
 
     return NextResponse.json(result);

@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { notificationPreferencesValidator } from "./notificationPrefs";
 
 export default defineSchema({
   users: defineTable({
@@ -43,6 +44,7 @@ export default defineSchema({
     canPrescribe: v.optional(v.boolean()),
     clinicName: v.optional(v.string()),
     notifyWhatsApp: v.optional(v.boolean()),
+    notificationPreferences: v.optional(notificationPreferencesValidator),
   })
     .index("by_pet", ["petId"])
     .index("by_user", ["userId"])
@@ -58,6 +60,7 @@ export default defineSchema({
     token: v.string(),
     accessDays: v.optional(v.number()),
     canPrescribe: v.optional(v.boolean()),
+    notificationPreferences: v.optional(notificationPreferencesValidator),
     createdAt: v.string(),
     acceptedAt: v.optional(v.string()),
     acceptedByUserId: v.optional(v.id("users")),
